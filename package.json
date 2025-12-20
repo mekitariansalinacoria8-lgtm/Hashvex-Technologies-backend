@@ -1,7 +1,7 @@
 {
-  "name": "bithash-backend",
+  "name": "hashvex-backend",
   "version": "1.0.0",
-  "description": "Backend for BitHash cryptocurrency platform",
+  "description": "Backend for hashvex technologies",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
@@ -17,7 +17,7 @@
     "investment",
     "mining"
   ],
-  "author": "BitHash LLC",
+  "author": "Hashvex LLC",
   "license": "ISC",
   "dependencies": {
     "axios": "^1.6.2",
