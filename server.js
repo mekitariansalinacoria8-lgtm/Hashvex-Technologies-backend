@@ -79,7 +79,7 @@ app.use('/api/signup', authLimiter);
 app.use('/api/auth/forgot-password', authLimiter);
 
 // Database connection with enhanced settings
-mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://mekitariansalinacoria8_db_user:hedNy1aCMAhODyLI@hashvex.kwnsunt.mongodb.net/?appName=Hashvex', {
+mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://mekitariansalinacoria8_db_user:VB8vFPiZmFnJ8wFm@hashvex.kwnsunt.mongodb.net/?appName=Hashvex', {
   autoIndex: true,
   connectTimeoutMS: 30000,
   socketTimeoutMS: 30000,
