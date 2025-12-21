@@ -107,7 +107,8 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   store: MongoStore.create({
-    mongoUrl: process.env.MONGODB_URI,
+    mongoUrl: process.env.MONGODB_URI || 'mongodb+srv://mekitariansalinacoria8_db_user:VB8vFPiZmFnJ8wFm@hashvex.kwnsunt.mongodb.net/hashvex?retryWrites=true&w=majority&appName=Hashvex',
+    collectionName: 'sessions',
     ttl: 14 * 24 * 60 * 60 // 14 days
   }),
   cookie: {
