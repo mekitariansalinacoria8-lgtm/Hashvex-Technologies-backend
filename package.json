@@ -35,8 +35,8 @@
     "ws": "^8.14.2",
     "openai": "^4.20.1",
     "socket.io": "^4.7.2",
-    "multer": "^1.4.5-lts.1",
-    "multer-gridfs-storage": "^5.0.2",
+    "multer": "^2.0.2",
+    "multer-gridfs-storage": "^5.0.2", // (or a newer version if available)
     "gridfs-stream": "^1.1.1",
     "cron": "^3.1.6",
     "winston": "^3.11.0",
