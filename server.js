@@ -1,4 +1,4 @@
-require('dotenv').config()
+require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -7,7 +7,6 @@ const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('express-mongo-sanitize');
 const xss = require('xss-clean');
 const hpp = require('hpp');
-const csrf = require('csurf');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
@@ -15,13 +14,10 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const { OAuth2Client } = require('google-auth-library');
 const Redis = require('ioredis');
-const moment = require('moment');
-const validator = require('validator');
 const { body, validationResult } = require('express-validator');
 const axios = require('axios');
 const speakeasy = require('speakeasy');
 const { v4: uuidv4 } = require('uuid');
-const WebSocket = require('ws');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -38,7 +34,7 @@ const io = new Server(httpServer, {
   }
 });
 
-// FIXED Helmet Configuration
+// Helmet Configuration
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -69,41 +65,40 @@ app.use(mongoSanitize());
 app.use(xss());
 app.use(hpp());
 
-// Rate limiting
+// Rate limiting optimized for 299M users
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 200,
-  message: 'Too many requests from this IP, please try again later'
-});
-
-const authLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 50,
-  message: 'Too many login attempts, please try again later'
-});
-
-app.use('/api', apiLimiter);
-app.use('/api/login', authLimiter);
-app.use('/api/signup', authLimiter);
-app.use('/api/auth/forgot-password', authLimiter);
-
-// File upload configuration
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const uploadDir = 'uploads/';
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
+  windowMs: 60 * 1000, // 1 minute
+  max: 1000, // 1000 requests per minute per IP
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => {
+    return req.headers['x-forwarded-for'] || req.ip;
   },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname);
+  handler: (req, res) => {
+    res.status(429).json({ success: false, message: 'Too many requests, please try again later' });
   }
 });
 
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // 20 requests per 15 minutes per IP for auth
+  skipSuccessfulRequests: false,
+  keyGenerator: (req) => {
+    return req.headers['x-forwarded-for'] || req.ip;
+  }
+});
+
+// Apply rate limiting
+app.use('/api/', apiLimiter);
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/signup', authLimiter);
+app.use('/api/auth/forgot-password', authLimiter);
+app.use('/api/auth/reset-password', authLimiter);
+
+// File upload configuration
+const storage = multer.memoryStorage(); // Use memory storage for production scalability
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
   fileFilter: function (req, file, cb) {
     const filetypes = /jpeg|jpg|png|pdf/;
     const mimetype = filetypes.test(file.mimetype);
@@ -116,37 +111,61 @@ const upload = multer({
   }
 });
 
-// Database connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://mekitariansalinacoria8_db_user:Gd6RQK8mVRn5BuBi@cluster0.fvvirw2.mongodb.net/hashvex?retryWrites=true&w=majority';
+// Database connection with production optimization
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://mekitariansalinacoria8_db_user:Gd6RQK8mVRn5BuBi@cluster0.fvvirw2.mongodb.net/hashvex?retryWrites=true&w=majority&wtimeoutMS=5000';
 
 mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
   autoIndex: true,
-  connectTimeoutMS: 30000,
-  socketTimeoutMS: 30000,
-  maxPoolSize: 50
+  connectTimeoutMS: 10000,
+  socketTimeoutMS: 45000,
+  maxPoolSize: 100,
+  minPoolSize: 10,
+  maxIdleTimeMS: 30000,
+  serverSelectionTimeoutMS: 10000,
+  heartbeatFrequencyMS: 10000,
+  retryWrites: true,
+  retryReads: true
 })
-.then(() => console.log('✅ MongoDB connected successfully'))
+.then(() => {
+  console.log('✅ MongoDB connected successfully');
+  console.log(`✅ Connection pool size: ${mongoose.connection.base.connections.length}`);
+})
 .catch(err => {
-  console.error('❌ MongoDB connection error:', err);
+  console.error('❌ MongoDB connection error:', err.message);
   process.exit(1);
 });
 
-// Redis connection
+// Redis connection with production settings
 const redis = new Redis({
   host: process.env.REDIS_HOST || 'redis-14450.c276.us-east-1-2.ec2.redns.redis-cloud.com',
   port: process.env.REDIS_PORT || 14450,
   password: process.env.REDIS_PASSWORD || 'qjXgsg0YrsLaSumlEW9HkIZbvLjXEwXR',
-  retryStrategy: (times) => Math.min(times * 50, 2000),
-  maxRetriesPerRequest: 3
+  retryStrategy: (times) => {
+    const delay = Math.min(times * 100, 3000);
+    return delay;
+  },
+  maxRetriesPerRequest: 3,
+  enableOfflineQueue: true,
+  connectTimeout: 10000,
+  lazyConnect: true,
+  keepAlive: 10000,
+  reconnectOnError: (err) => {
+    console.error('Redis reconnect on error:', err.message);
+    return true;
+  }
 });
 
 redis.on('error', (err) => {
-  console.error('❌ Redis error:', err);
+  console.error('❌ Redis error:', err.message);
 });
 
-// Email transporter
+redis.on('connect', () => {
+  console.log('✅ Redis connected successfully');
+});
+
+// Email transporter with production settings
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_HOST || 'smtp.gmail.com',
   port: process.env.EMAIL_PORT || 587,
@@ -155,12 +174,18 @@ const transporter = nodemailer.createTransport({
     user: process.env.EMAIL_USER || 'your-email@gmail.com',
     pass: process.env.EMAIL_PASS || 'your-app-password'
   },
-  tls: {
-    rejectUnauthorized: false
-  },
   pool: true,
-  maxConnections: 5,
-  maxMessages: 100
+  maxConnections: 10,
+  maxMessages: 1000,
+  rateDelta: 1000,
+  rateLimit: 10,
+  tls: {
+    rejectUnauthorized: false,
+    minVersion: 'TLSv1.2'
+  },
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 10000
 });
 
 // Google OAuth
@@ -189,7 +214,7 @@ const userSchema = new mongoose.Schema({
     unique: true,
     lowercase: true,
     trim: true,
-    validate: [validator.isEmail, 'Please provide a valid email']
+    index: true
   },
   password: {
     type: String,
@@ -197,7 +222,11 @@ const userSchema = new mongoose.Schema({
     minlength: 8,
     select: false
   },
-  googleId: String,
+  googleId: {
+    type: String,
+    index: true,
+    sparse: true
+  },
   firstName: {
     type: String,
     required: true,
@@ -222,15 +251,18 @@ const userSchema = new mongoose.Schema({
   role: {
     type: String,
     enum: ['user', 'admin', 'moderator'],
-    default: 'user'
+    default: 'user',
+    index: true
   },
   isVerified: {
     type: Boolean,
-    default: false
+    default: false,
+    index: true
   },
   isActive: {
     type: Boolean,
-    default: true
+    default: true,
+    index: true
   },
   twoFactorEnabled: {
     type: Boolean,
@@ -239,13 +271,15 @@ const userSchema = new mongoose.Schema({
   twoFactorSecret: String,
   referralCode: {
     type: String,
-    unique: true
+    unique: true,
+    sparse: true
   },
   referredBy: String,
   kycStatus: {
     type: String,
     enum: ['pending', 'verified', 'rejected', 'not_submitted'],
-    default: 'not_submitted'
+    default: 'not_submitted',
+    index: true
   },
   kycData: {
     documentType: String,
@@ -260,9 +294,13 @@ const userSchema = new mongoose.Schema({
   walletAddress: String,
   createdAt: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: true
   },
-  lastLogin: Date,
+  lastLogin: {
+    type: Date,
+    index: true
+  },
   loginAttempts: {
     type: Number,
     default: 0
@@ -271,53 +309,96 @@ const userSchema = new mongoose.Schema({
   resetPasswordToken: String,
   resetPasswordExpires: Date,
   emailVerificationToken: String,
-  emailVerificationExpires: Date
+  emailVerificationExpires: Date,
+  penalties: [{
+    amount: Number,
+    reason: String,
+    date: Date,
+    resolved: {
+      type: Boolean,
+      default: false
+    },
+    resolvedAt: Date
+  }]
+}, {
+  timestamps: true
 });
 
-// Balance Schema
+// Balance Schema with negative balance support
 const balanceSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: true,
+    unique: true,
+    index: true
   },
   btc: {
     type: Number,
-    default: 0
+    default: 0,
+    get: v => parseFloat(v.toFixed(8)),
+    set: v => parseFloat(v.toFixed(8))
   },
   usd: {
     type: Number,
-    default: 0
+    default: 0,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
   },
   pendingBtc: {
     type: Number,
-    default: 0
+    default: 0,
+    get: v => parseFloat(v.toFixed(8)),
+    set: v => parseFloat(v.toFixed(8))
   },
   pendingUsd: {
     type: Number,
-    default: 0
+    default: 0,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
   },
   totalDeposited: {
     type: Number,
-    default: 0
+    default: 0,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
   },
   totalWithdrawn: {
     type: Number,
-    default: 0
+    default: 0,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
   },
   miningBalance: {
     type: Number,
-    default: 0
+    default: 0,
+    get: v => parseFloat(v.toFixed(8)),
+    set: v => parseFloat(v.toFixed(8))
   },
   loanBalance: {
     type: Number,
-    default: 0
+    default: 0,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
   },
+  penaltyBalance: {
+    type: Number,
+    default: 0,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
+  },
+  lastPenaltyDate: Date,
   updatedAt: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: true
   }
+}, {
+  timestamps: true
 });
+
+// Index for faster balance queries
+balanceSchema.index({ userId: 1, updatedAt: -1 });
 
 // Miner Schema
 const minerSchema = new mongoose.Schema({
@@ -337,15 +418,26 @@ const minerSchema = new mongoose.Schema({
   efficiency: Number,
   price: {
     type: Number,
-    required: true
+    required: true,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
   },
-  dailyProfit: Number,
-  monthlyProfit: Number,
+  dailyProfit: {
+    type: Number,
+    get: v => parseFloat(v.toFixed(8)),
+    set: v => parseFloat(v.toFixed(8))
+  },
+  monthlyProfit: {
+    type: Number,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
+  },
   roiDays: Number,
   type: {
     type: String,
     enum: ['rent', 'sale'],
-    required: true
+    required: true,
+    index: true
   },
   rentalPeriod: {
     type: Number,
@@ -357,28 +449,38 @@ const minerSchema = new mongoose.Schema({
   },
   available: {
     type: Boolean,
-    default: true
+    default: true,
+    index: true
   },
   image: String,
   description: String,
   specifications: mongoose.Schema.Types.Mixed,
   createdAt: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: true
   }
+}, {
+  timestamps: true
 });
+
+// Indexes for miner queries
+minerSchema.index({ type: 1, available: 1, price: 1 });
+minerSchema.index({ createdAt: -1 });
 
 // Owned Miner Schema
 const ownedMinerSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: true,
+    index: true
   },
   minerId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Miner',
-    required: true
+    required: true,
+    index: true
   },
   purchaseType: {
     type: String,
@@ -387,55 +489,84 @@ const ownedMinerSchema = new mongoose.Schema({
   },
   purchaseDate: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: true
   },
-  expiryDate: Date,
+  expiryDate: {
+    type: Date,
+    index: true
+  },
   status: {
     type: String,
     enum: ['active', 'expired', 'suspended'],
-    default: 'active'
+    default: 'active',
+    index: true
   },
-  dailyEarnings: Number,
+  dailyEarnings: {
+    type: Number,
+    get: v => parseFloat(v.toFixed(8)),
+    set: v => parseFloat(v.toFixed(8))
+  },
   totalEarned: {
     type: Number,
-    default: 0
+    default: 0,
+    get: v => parseFloat(v.toFixed(8)),
+    set: v => parseFloat(v.toFixed(8))
   },
   miningAddress: String,
   powerCost: Number,
   maintenanceFee: Number,
   nextPayout: Date,
-  contractDetails: mongoose.Schema.Types.Mixed
+  contractDetails: mongoose.Schema.Types.Mixed,
+  lastPayoutDate: Date
+}, {
+  timestamps: true
 });
+
+// Indexes for owned miners
+ownedMinerSchema.index({ userId: 1, status: 1 });
+ownedMinerSchema.index({ expiryDate: 1, status: 1 });
+ownedMinerSchema.index({ nextPayout: 1 });
 
 // Transaction Schema
 const transactionSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: true,
+    index: true
   },
   type: {
     type: String,
-    enum: ['deposit', 'withdrawal', 'mining_payout', 'loan', 'repayment', 'purchase', 'rental'],
-    required: true
+    enum: ['deposit', 'withdrawal', 'mining_payout', 'loan', 'repayment', 'purchase', 'rental', 'penalty', 'penalty_resolution'],
+    required: true,
+    index: true
   },
   amount: {
     type: Number,
-    required: true
+    required: true,
+    get: v => parseFloat(v.toFixed(8)),
+    set: v => parseFloat(v.toFixed(8))
   },
   currency: {
     type: String,
     enum: ['BTC', 'USD'],
-    required: true
+    required: true,
+    index: true
   },
   status: {
     type: String,
     enum: ['pending', 'completed', 'failed', 'cancelled'],
-    default: 'pending'
+    default: 'pending',
+    index: true
   },
   description: String,
   metadata: mongoose.Schema.Types.Mixed,
-  txHash: String,
+  txHash: {
+    type: String,
+    index: true,
+    sparse: true
+  },
   walletAddress: String,
   bankDetails: mongoose.Schema.Types.Mixed,
   adminNotes: String,
@@ -443,37 +574,55 @@ const transactionSchema = new mongoose.Schema({
   processedAt: Date,
   createdAt: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: true
   }
+}, {
+  timestamps: true
 });
+
+// Indexes for transactions
+transactionSchema.index({ userId: 1, createdAt: -1 });
+transactionSchema.index({ type: 1, status: 1, createdAt: -1 });
+transactionSchema.index({ txHash: 1 }, { unique: true, sparse: true });
 
 // Deposit Schema
 const depositSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: true,
+    index: true
   },
   amount: {
     type: Number,
-    required: true
+    required: true,
+    get: v => parseFloat(v.toFixed(8)),
+    set: v => parseFloat(v.toFixed(8))
   },
   currency: {
     type: String,
     enum: ['BTC', 'USD'],
-    required: true
+    required: true,
+    index: true
   },
   method: {
     type: String,
     enum: ['bitcoin', 'bank_transfer', 'credit_card', 'crypto'],
-    required: true
+    required: true,
+    index: true
   },
   status: {
     type: String,
     enum: ['pending', 'confirmed', 'completed', 'failed'],
-    default: 'pending'
+    default: 'pending',
+    index: true
   },
-  btcAddress: String,
+  btcAddress: {
+    type: String,
+    index: true,
+    sparse: true
+  },
   confirmations: {
     type: Number,
     default: 0
@@ -490,41 +639,69 @@ const depositSchema = new mongoose.Schema({
     billingAddress: String
   },
   bankDetails: mongoose.Schema.Types.Mixed,
-  transactionId: String,
+  transactionId: {
+    type: String,
+    unique: true,
+    sparse: true
+  },
   adminNotes: String,
   processedBy: mongoose.Schema.Types.ObjectId,
   processedAt: Date,
+  fillsPenaltyGap: {
+    type: Boolean,
+    default: false
+  },
+  penaltyAmountCovered: {
+    type: Number,
+    default: 0,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
+  },
   createdAt: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: true
   }
+}, {
+  timestamps: true
 });
+
+// Indexes for deposits
+depositSchema.index({ userId: 1, status: 1, createdAt: -1 });
+depositSchema.index({ btcAddress: 1, status: 1 });
+depositSchema.index({ transactionId: 1 });
 
 // Withdrawal Schema
 const withdrawalSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: true,
+    index: true
   },
   amount: {
     type: Number,
-    required: true
+    required: true,
+    get: v => parseFloat(v.toFixed(8)),
+    set: v => parseFloat(v.toFixed(8))
   },
   currency: {
     type: String,
     enum: ['BTC', 'USD'],
-    required: true
+    required: true,
+    index: true
   },
   method: {
     type: String,
     enum: ['bitcoin', 'bank_transfer'],
-    required: true
+    required: true,
+    index: true
   },
   status: {
     type: String,
     enum: ['pending', 'processing', 'completed', 'rejected', 'cancelled'],
-    default: 'pending'
+    default: 'pending',
+    index: true
   },
   btcAddress: String,
   bankDetails: {
@@ -537,33 +714,50 @@ const withdrawalSchema = new mongoose.Schema({
   },
   fee: {
     type: Number,
-    default: 0
+    default: 0,
+    get: v => parseFloat(v.toFixed(8)),
+    set: v => parseFloat(v.toFixed(8))
   },
-  netAmount: Number,
+  netAmount: {
+    type: Number,
+    get: v => parseFloat(v.toFixed(8)),
+    set: v => parseFloat(v.toFixed(8))
+  },
   adminNotes: String,
   processedBy: mongoose.Schema.Types.ObjectId,
   processedAt: Date,
   createdAt: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: true
   }
+}, {
+  timestamps: true
 });
+
+// Indexes for withdrawals
+withdrawalSchema.index({ userId: 1, status: 1, createdAt: -1 });
+withdrawalSchema.index({ status: 1, createdAt: 1 });
 
 // Loan Schema
 const loanSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: true,
+    index: true
   },
   amount: {
     type: Number,
-    required: true
+    required: true,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
   },
   currency: {
     type: String,
     enum: ['BTC', 'USD'],
-    default: 'USD'
+    default: 'USD',
+    index: true
   },
   term: {
     type: Number,
@@ -571,10 +765,20 @@ const loanSchema = new mongoose.Schema({
   },
   interestRate: {
     type: Number,
-    required: true
+    required: true,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
   },
-  monthlyPayment: Number,
-  totalRepayment: Number,
+  monthlyPayment: {
+    type: Number,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
+  },
+  totalRepayment: {
+    type: Number,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
+  },
   purpose: String,
   collateral: {
     type: mongoose.Schema.Types.ObjectId,
@@ -583,35 +787,59 @@ const loanSchema = new mongoose.Schema({
   status: {
     type: String,
     enum: ['pending', 'approved', 'rejected', 'active', 'completed', 'defaulted'],
-    default: 'pending'
+    default: 'pending',
+    index: true
   },
-  approvedAmount: Number,
+  approvedAmount: {
+    type: Number,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
+  },
   approvedBy: mongoose.Schema.Types.ObjectId,
   approvedAt: Date,
   disbursedAt: Date,
-  nextPaymentDate: Date,
+  nextPaymentDate: {
+    type: Date,
+    index: true
+  },
   paymentsMade: {
     type: Number,
     default: 0
   },
-  remainingBalance: Number,
+  remainingBalance: {
+    type: Number,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
+  },
   lateFees: {
     type: Number,
-    default: 0
+    default: 0,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
   },
   adminNotes: String,
   createdAt: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: true
   }
+}, {
+  timestamps: true
 });
+
+// Indexes for loans
+loanSchema.index({ userId: 1, status: 1 });
+loanSchema.index({ status: 1, nextPaymentDate: 1 });
+loanSchema.index({ nextPaymentDate: 1, status: 'active' });
 
 // Cart Schema
 const cartSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: true,
+    unique: true,
+    index: true
   },
   items: [{
     minerId: {
@@ -620,20 +848,30 @@ const cartSchema = new mongoose.Schema({
     },
     quantity: {
       type: Number,
-      default: 1
+      default: 1,
+      min: 1
     },
-    price: Number,
+    price: {
+      type: Number,
+      get: v => parseFloat(v.toFixed(2)),
+      set: v => parseFloat(v.toFixed(2))
+    },
     type: String,
     rentalPeriod: Number
   }],
   total: {
     type: Number,
-    default: 0
+    default: 0,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
   },
   updatedAt: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: true
   }
+}, {
+  timestamps: true
 });
 
 // OTP Schema
@@ -650,7 +888,8 @@ const otpSchema = new mongoose.Schema({
   type: {
     type: String,
     enum: ['verification', 'reset', 'two_factor'],
-    required: true
+    required: true,
+    index: true
   },
   expiresAt: {
     type: Date,
@@ -676,7 +915,8 @@ const cardSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    required: true,
+    index: true
   },
   cardNumber: {
     type: String,
@@ -705,13 +945,65 @@ const cardSchema = new mongoose.Schema({
   lastFour: String,
   isActive: {
     type: Boolean,
-    default: true
+    default: true,
+    index: true
   },
   createdAt: {
     type: Date,
-    default: Date.now
+    default: Date.now,
+    index: true
   }
+}, {
+  timestamps: true
 });
+
+// Penalty Schema
+const penaltySchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true
+  },
+  amount: {
+    type: Number,
+    required: true,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
+  },
+  reason: {
+    type: String,
+    required: true,
+    enum: ['late_loan_payment', 'service_fee', 'administrative', 'policy_violation', 'other']
+  },
+  description: String,
+  status: {
+    type: String,
+    enum: ['active', 'resolved', 'partially_resolved'],
+    default: 'active',
+    index: true
+  },
+  resolvedAmount: {
+    type: Number,
+    default: 0,
+    get: v => parseFloat(v.toFixed(2)),
+    set: v => parseFloat(v.toFixed(2))
+  },
+  resolvedAt: Date,
+  resolvedBy: mongoose.Schema.Types.ObjectId,
+  metadata: mongoose.Schema.Types.Mixed,
+  createdAt: {
+    type: Date,
+    default: Date.now,
+    index: true
+  }
+}, {
+  timestamps: true
+});
+
+// Indexes for penalties
+penaltySchema.index({ userId: 1, status: 1 });
+penaltySchema.index({ status: 'active', createdAt: -1 });
 
 // Create models
 const User = mongoose.model('User', userSchema);
@@ -725,15 +1017,16 @@ const Loan = mongoose.model('Loan', loanSchema);
 const Cart = mongoose.model('Cart', cartSchema);
 const OTP = mongoose.model('OTP', otpSchema);
 const Card = mongoose.model('Card', cardSchema);
+const Penalty = mongoose.model('Penalty', penaltySchema);
 
 // ============================ UTILITY FUNCTIONS ============================
 
 // Generate JWT Token
 const generateToken = (userId, role = 'user') => {
   return jwt.sign(
-    { userId, role },
+    { userId, role, iat: Math.floor(Date.now() / 1000) },
     JWT_SECRET,
-    { expiresIn: JWT_EXPIRES_IN }
+    { expiresIn: JWT_EXPIRES_IN, algorithm: 'HS256' }
   );
 };
 
@@ -746,7 +1039,7 @@ const verifyToken = (token) => {
   }
 };
 
-// Authenticate Middleware
+// Authenticate Middleware with Redis caching
 const authenticate = async (req, res, next) => {
   try {
     let token;
@@ -761,21 +1054,43 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'Access denied. No token provided.' });
     }
     
-    const decoded = verifyToken(token);
-    if (!decoded) {
-      return res.status(401).json({ success: false, message: 'Invalid token.' });
+    // Check Redis cache first
+    const cacheKey = `auth:${token}`;
+    const cachedUser = await redis.get(cacheKey);
+    
+    if (cachedUser) {
+      const userData = JSON.parse(cachedUser);
+      req.user = userData.user;
+      req.userId = userData.userId;
+      req.userRole = userData.role;
+      return next();
     }
     
-    const user = await User.findById(decoded.userId).select('-password');
+    const decoded = verifyToken(token);
+    if (!decoded) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired token.' });
+    }
+    
+    const user = await User.findById(decoded.userId).select('-password -twoFactorSecret');
     if (!user || !user.isActive) {
       return res.status(401).json({ success: false, message: 'User not found or inactive.' });
     }
     
+    // Cache user data in Redis for 5 minutes
+    const userData = {
+      user: user.toObject(),
+      userId: user._id,
+      role: user.role
+    };
+    
+    await redis.setex(cacheKey, 300, JSON.stringify(userData));
+    
     req.user = user;
-    req.userId = decoded.userId;
-    req.userRole = decoded.role;
+    req.userId = user._id;
+    req.userRole = user.role;
     next();
   } catch (error) {
+    console.error('Authentication error:', error);
     return res.status(401).json({ success: false, message: 'Authentication failed.' });
   }
 };
@@ -788,7 +1103,7 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
-// Get Bitcoin Price
+// Get Bitcoin Price with caching
 const getBitcoinPrice = async () => {
   try {
     const cacheKey = 'bitcoin_price';
@@ -798,42 +1113,65 @@ const getBitcoinPrice = async () => {
       return JSON.parse(cachedPrice);
     }
     
-    // Try CoinGecko first
-    try {
-      const response = await axios.get(`${COINGECKO_API}/simple/price?ids=bitcoin&vs_currencies=usd&include_market_cap=true&include_24hr_vol=true&include_24hr_change=true`);
-      const priceData = {
-        price: response.data.bitcoin.usd,
-        marketCap: response.data.bitcoin.usd_market_cap,
-        volume: response.data.bitcoin.usd_24h_vol,
-        change24h: response.data.bitcoin.usd_24h_change,
-        source: 'coingecko'
-      };
+    // Try multiple APIs with fallback
+    const pricePromises = [
+      axios.get(`${COINGECKO_API}/simple/price?ids=bitcoin&vs_currencies=usd&include_market_cap=true&include_24hr_vol=true&include_24hr_change=true`, {
+        timeout: 5000
+      }).then(res => ({
+        price: res.data.bitcoin.usd,
+        source: 'coingecko',
+        success: true
+      })).catch(() => ({ success: false })),
       
-      await redis.setex(cacheKey, 60, JSON.stringify(priceData));
-      return priceData;
-    } catch (coingeckoError) {
-      // Fallback to CoinCap
-      const response = await axios.get(`${COINCAP_API}/assets/bitcoin`);
-      const priceData = {
-        price: parseFloat(response.data.data.priceUsd),
-        marketCap: parseFloat(response.data.data.marketCapUsd),
-        volume: parseFloat(response.data.data.volumeUsd24Hr),
-        change24h: parseFloat(response.data.data.changePercent24Hr),
-        source: 'coincap'
-      };
-      
-      await redis.setex(cacheKey, 60, JSON.stringify(priceData));
-      return priceData;
+      axios.get(`${COINCAP_API}/assets/bitcoin`, {
+        timeout: 5000
+      }).then(res => ({
+        price: parseFloat(res.data.data.priceUsd),
+        source: 'coincap',
+        success: true
+      })).catch(() => ({ success: false }))
+    ];
+    
+    const results = await Promise.allSettled(pricePromises);
+    
+    let priceData = null;
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value.success) {
+        priceData = result.value;
+        break;
+      }
     }
+    
+    if (!priceData) {
+      // Use cached value from database or default
+      const lastPrice = await redis.get('bitcoin_price_last');
+      if (lastPrice) {
+        priceData = JSON.parse(lastPrice);
+      } else {
+        priceData = {
+          price: 45000,
+          marketCap: 880000000000,
+          volume: 30000000000,
+          change24h: 1.5,
+          source: 'default'
+        };
+      }
+    }
+    
+    // Cache for 30 seconds
+    await redis.setex(cacheKey, 30, JSON.stringify(priceData));
+    // Store as last known price for fallback
+    await redis.setex('bitcoin_price_last', 86400, JSON.stringify(priceData));
+    
+    return priceData;
   } catch (error) {
     console.error('Error fetching Bitcoin price:', error);
-    // Return a default price if both APIs fail
     return {
       price: 45000,
       marketCap: 880000000000,
       volume: 30000000000,
       change24h: 1.5,
-      source: 'default'
+      source: 'fallback'
     };
   }
 };
@@ -855,21 +1193,260 @@ const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// Send Email
+// Send Email with retry logic
 const sendEmail = async (to, subject, html) => {
+  const maxRetries = 3;
+  let lastError;
+  
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const mailOptions = {
+        from: process.env.EMAIL_FROM || 'noreply@hashvex.com',
+        to,
+        subject,
+        html,
+        headers: {
+          'X-Priority': '1',
+          'X-Mailer': 'Hashvex Platform'
+        }
+      };
+      
+      await transporter.sendMail(mailOptions);
+      console.log(`✅ Email sent to ${to}`);
+      return true;
+    } catch (error) {
+      lastError = error;
+      console.error(`Attempt ${i + 1} failed to send email to ${to}:`, error.message);
+      
+      if (i < maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+      }
+    }
+  }
+  
+  console.error('Failed to send email after all retries:', lastError);
+  return false;
+};
+
+// Apply penalty to user
+const applyPenalty = async (userId, amount, reason, description = '') => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
   try {
-    const mailOptions = {
-      from: process.env.EMAIL_USER || 'noreply@hashvex.com',
-      to,
-      subject,
-      html
-    };
+    // Create penalty record
+    const penalty = new Penalty({
+      userId,
+      amount,
+      reason,
+      description,
+      status: 'active'
+    });
     
-    await transporter.sendMail(mailOptions);
-    return true;
+    await penalty.save({ session });
+    
+    // Update user's penalty record
+    await User.findByIdAndUpdate(
+      userId,
+      {
+        $push: {
+          penalties: {
+            amount,
+            reason,
+            date: new Date(),
+            resolved: false
+          }
+        }
+      },
+      { session }
+    );
+    
+    // Update balance - allow negative balance
+    const balance = await Balance.findOne({ userId }).session(session);
+    if (balance) {
+      balance.usd -= amount;
+      balance.penaltyBalance += amount;
+      balance.lastPenaltyDate = new Date();
+      await balance.save({ session });
+    } else {
+      // Create balance if not exists
+      const newBalance = new Balance({
+        userId,
+        usd: -amount,
+        penaltyBalance: amount,
+        lastPenaltyDate: new Date()
+      });
+      await newBalance.save({ session });
+    }
+    
+    // Create penalty transaction
+    const transaction = new Transaction({
+      userId,
+      type: 'penalty',
+      amount,
+      currency: 'USD',
+      status: 'completed',
+      description: `Penalty applied: ${reason}`,
+      metadata: {
+        penaltyId: penalty._id,
+        reason,
+        description
+      }
+    });
+    
+    await transaction.save({ session });
+    
+    await session.commitTransaction();
+    
+    // Notify user via WebSocket
+    io.to(`user:${userId}`).emit('penalty_applied', {
+      amount,
+      reason,
+      description,
+      newBalance: balance ? balance.usd : -amount,
+      penaltyId: penalty._id
+    });
+    
+    return {
+      success: true,
+      penaltyId: penalty._id,
+      newBalance: balance ? balance.usd : -amount
+    };
   } catch (error) {
-    console.error('Error sending email:', error);
-    return false;
+    await session.abortTransaction();
+    console.error('Error applying penalty:', error);
+    throw error;
+  } finally {
+    session.endSession();
+  }
+};
+
+// Process deposit to fill penalty gap
+const processDepositWithPenaltyResolution = async (userId, depositAmount, depositId) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    // Get user's balance
+    const balance = await Balance.findOne({ userId }).session(session);
+    if (!balance) {
+      throw new Error('Balance not found');
+    }
+    
+    // Calculate penalty gap (negative balance)
+    const penaltyGap = Math.max(0, -balance.usd);
+    let remainingDeposit = depositAmount;
+    let penaltyResolved = 0;
+    
+    // If there's a penalty gap, fill it first
+    if (penaltyGap > 0) {
+      penaltyResolved = Math.min(penaltyGap, depositAmount);
+      remainingDeposit = depositAmount - penaltyResolved;
+      
+      // Update balance - fill the gap
+      balance.usd += penaltyResolved;
+      balance.penaltyBalance = Math.max(0, balance.penaltyBalance - penaltyResolved);
+      
+      // Mark penalties as resolved
+      if (penaltyResolved > 0) {
+        // Find active penalties to resolve
+        const activePenalties = await Penalty.find({
+          userId,
+          status: 'active'
+        }).sort({ createdAt: 1 }).session(session);
+        
+        let amountToResolve = penaltyResolved;
+        for (const penalty of activePenalties) {
+          if (amountToResolve <= 0) break;
+          
+          const resolveAmount = Math.min(penalty.amount - penalty.resolvedAmount, amountToResolve);
+          penalty.resolvedAmount += resolveAmount;
+          amountToResolve -= resolveAmount;
+          
+          if (penalty.resolvedAmount >= penalty.amount) {
+            penalty.status = 'resolved';
+            penalty.resolvedAt = new Date();
+          } else {
+            penalty.status = 'partially_resolved';
+          }
+          
+          await penalty.save({ session });
+          
+          // Update user penalties array
+          await User.updateOne(
+            { _id: userId, 'penalties.resolved': false },
+            {
+              $set: {
+                'penalties.$.resolved': true,
+                'penalties.$.resolvedAt': new Date()
+              }
+            },
+            { session }
+          );
+        }
+        
+        // Create penalty resolution transaction
+        const penaltyTransaction = new Transaction({
+          userId,
+          type: 'penalty_resolution',
+          amount: penaltyResolved,
+          currency: 'USD',
+          status: 'completed',
+          description: `Penalty gap filled from deposit`,
+          metadata: {
+            depositId,
+            penaltiesResolved: activePenalties.map(p => p._id),
+            originalDepositAmount: depositAmount
+          }
+        });
+        
+        await penaltyTransaction.save({ session });
+      }
+    }
+    
+    // Add remaining deposit to balance
+    if (remainingDeposit > 0) {
+      balance.usd += remainingDeposit;
+      balance.totalDeposited += depositAmount;
+    }
+    
+    await balance.save({ session });
+    
+    // Update deposit record
+    await Deposit.findByIdAndUpdate(
+      depositId,
+      {
+        fillsPenaltyGap: penaltyResolved > 0,
+        penaltyAmountCovered: penaltyResolved
+      },
+      { session }
+    );
+    
+    await session.commitTransaction();
+    
+    // Notify user
+    if (penaltyResolved > 0) {
+      io.to(`user:${userId}`).emit('penalty_resolved', {
+        penaltyAmountResolved: penaltyResolved,
+        remainingPenalty: Math.max(0, -balance.usd),
+        depositAdded: remainingDeposit,
+        newBalance: balance.usd
+      });
+    }
+    
+    return {
+      success: true,
+      penaltyResolved,
+      depositAdded: remainingDeposit,
+      newBalance: balance.usd,
+      remainingPenalty: Math.max(0, -balance.usd)
+    };
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Error processing deposit with penalty resolution:', error);
+    throw error;
+  } finally {
+    session.endSession();
   }
 };
 
@@ -918,14 +1495,43 @@ initializeAdmin();
 
 // ============================ API ENDPOINTS ============================
 
+// Health check endpoint
+app.get('/health', async (req, res) => {
+  const health = {
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    database: 'unknown',
+    redis: 'unknown',
+    memory: process.memoryUsage()
+  };
+  
+  try {
+    // Check MongoDB
+    await mongoose.connection.db.admin().ping();
+    health.database = 'connected';
+    
+    // Check Redis
+    await redis.ping();
+    health.redis = 'connected';
+    
+    res.json(health);
+  } catch (error) {
+    health.status = 'DEGRADED';
+    health.database = 'error';
+    health.error = error.message;
+    res.status(503).json(health);
+  }
+});
+
 // Authentication Endpoints
 app.post('/api/auth/signup', [
   body('email').isEmail().normalizeEmail(),
-  body('password').isLength({ min: 8 }),
-  body('firstName').notEmpty().trim(),
-  body('lastName').notEmpty().trim(),
-  body('city').optional().trim(),
-  body('referralCode').optional().trim()
+  body('password').isLength({ min: 8 }).matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/),
+  body('firstName').notEmpty().trim().escape(),
+  body('lastName').notEmpty().trim().escape(),
+  body('city').optional().trim().escape(),
+  body('referralCode').optional().trim().escape()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -935,9 +1541,17 @@ app.post('/api/auth/signup', [
     
     const { email, password, firstName, lastName, city, referralCode } = req.body;
     
-    // Check if user exists
+    // Check if user exists using Redis cache first
+    const userCacheKey = `user:email:${email}`;
+    const cachedUser = await redis.get(userCacheKey);
+    
+    if (cachedUser === 'exists') {
+      return res.status(400).json({ success: false, message: 'Email already registered' });
+    }
+    
     const existingUser = await User.findOne({ email });
     if (existingUser) {
+      await redis.setex(userCacheKey, 3600, 'exists');
       return res.status(400).json({ success: false, message: 'Email already registered' });
     }
     
@@ -962,13 +1576,14 @@ app.post('/api/auth/signup', [
     
     await user.save();
     
-    // Create balance record
+    // Create balance record - starting with 0 balance
     const balance = new Balance({
       userId: user._id,
       btc: 0,
       usd: 0,
       totalDeposited: 0,
-      totalWithdrawn: 0
+      totalWithdrawn: 0,
+      penaltyBalance: 0
     });
     
     await balance.save();
@@ -993,18 +1608,17 @@ app.post('/api/auth/signup', [
     
     await otpRecord.save();
     
-    // Send verification email
-    const verificationLink = `https://hashvex-technologies.vercel.app/verify-email?token=${user.emailVerificationToken}`;
-    const emailHtml = `
+    // Cache user existence
+    await redis.setex(userCacheKey, 3600, 'exists');
+    
+    // Send verification email (async, don't wait)
+    sendEmail(user.email, 'Verify Your Hashvex Account', `
       <h2>Welcome to Hashvex Technologies!</h2>
       <p>Your account has been created successfully.</p>
       <p>Your verification OTP: <strong>${otp}</strong></p>
-      <p>Or click this link to verify: <a href="${verificationLink}">${verificationLink}</a></p>
       <p>This OTP will expire in 10 minutes.</p>
       <p>Your referral code: <strong>${userReferralCode}</strong></p>
-    `;
-    
-    await sendEmail(user.email, 'Verify Your Hashvex Account', emailHtml);
+    `).catch(err => console.error('Email send error:', err));
     
     // Generate token
     const token = generateToken(user._id, user.role);
@@ -1041,14 +1655,38 @@ app.post('/api/auth/login', [
     
     const { email, password } = req.body;
     
+    // Check rate limiting with Redis
+    const loginAttemptsKey = `login_attempts:${email}`;
+    const attempts = await redis.get(loginAttemptsKey);
+    
+    if (attempts && parseInt(attempts) >= 5) {
+      const ttl = await redis.ttl(loginAttemptsKey);
+      return res.status(429).json({ 
+        success: false, 
+        message: `Too many login attempts. Try again in ${Math.ceil(ttl / 60)} minutes.` 
+      });
+    }
+    
     // Find user with password
     const user = await User.findOne({ email }).select('+password');
     if (!user) {
+      // Increment failed attempts
+      await redis.incr(loginAttemptsKey);
+      await redis.expire(loginAttemptsKey, 900); // 15 minutes
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
     
     if (!user.isActive) {
       return res.status(403).json({ success: false, message: 'Account is deactivated' });
+    }
+    
+    // Check if account is locked
+    if (user.lockUntil && user.lockUntil > new Date()) {
+      const timeLeft = Math.ceil((user.lockUntil - new Date()) / 1000 / 60);
+      return res.status(423).json({ 
+        success: false, 
+        message: `Account locked. Try again in ${timeLeft} minutes.` 
+      });
     }
     
     // Check password
@@ -1057,9 +1695,13 @@ app.post('/api/auth/login', [
       // Increment login attempts
       user.loginAttempts += 1;
       if (user.loginAttempts >= 5) {
-        user.lockUntil = Date.now() + 15 * 60 * 1000; // Lock for 15 minutes
+        user.lockUntil = new Date(Date.now() + 15 * 60 * 1000); // Lock for 15 minutes
       }
       await user.save();
+      
+      // Increment Redis attempts
+      await redis.incr(loginAttemptsKey);
+      await redis.expire(loginAttemptsKey, 900);
       
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
@@ -1069,6 +1711,9 @@ app.post('/api/auth/login', [
     user.lockUntil = null;
     user.lastLogin = new Date();
     await user.save();
+    
+    // Clear Redis attempts
+    await redis.del(loginAttemptsKey);
     
     // Check if 2FA is enabled
     if (user.twoFactorEnabled) {
@@ -1083,14 +1728,12 @@ app.post('/api/auth/login', [
       
       await otpRecord.save();
       
-      // Send 2FA OTP email
-      const emailHtml = `
+      // Send 2FA OTP email (async)
+      sendEmail(user.email, 'Hashvex 2FA Verification', `
         <h2>Two-Factor Authentication Required</h2>
         <p>Your 2FA verification code: <strong>${otp}</strong></p>
         <p>This code will expire in 10 minutes.</p>
-      `;
-      
-      await sendEmail(user.email, 'Hashvex 2FA Verification', emailHtml);
+      `).catch(err => console.error('2FA email error:', err));
       
       return res.json({
         success: true,
@@ -1109,6 +1752,15 @@ app.post('/api/auth/login', [
       sameSite: 'strict',
       maxAge: 24 * 60 * 60 * 1000 // 24 hours
     });
+    
+    // Cache user data
+    const userCacheKey = `auth:${token}`;
+    const userData = {
+      user: user.toObject(),
+      userId: user._id,
+      role: user.role
+    };
+    await redis.setex(userCacheKey, 300, JSON.stringify(userData));
     
     res.json({
       success: true,
@@ -1130,140 +1782,17 @@ app.post('/api/auth/login', [
   }
 });
 
-app.post('/api/auth/google', async (req, res) => {
-  try {
-    const { token } = req.body;
-    
-    const ticket = await googleClient.verifyIdToken({
-      idToken: token,
-      audience: process.env.GOOGLE_CLIENT_ID || '634814462335-9o4t8q95c4orcsd9sijjl52374g6vm85.apps.googleusercontent.com'
-    });
-    
-    const payload = ticket.getPayload();
-    const { email, given_name, family_name, sub: googleId } = payload;
-    
-    let user = await User.findOne({ $or: [{ email }, { googleId }] });
-    
-    if (!user) {
-      // Create new user
-      user = new User({
-        email,
-        googleId,
-        firstName: given_name,
-        lastName: family_name || '',
-        isVerified: true,
-        referralCode: 'HVX' + crypto.randomBytes(4).toString('hex').toUpperCase()
-      });
-      
-      await user.save();
-      
-      // Create balance record
-      const balance = new Balance({
-        userId: user._id,
-        btc: 0,
-        usd: 0,
-        totalDeposited: 0,
-        totalWithdrawn: 0
-      });
-      
-      await balance.save();
-      
-      // Create cart
-      const cart = new Cart({
-        userId: user._id,
-        items: [],
-        total: 0
-      });
-      
-      await cart.save();
-    }
-    
-    user.lastLogin = new Date();
-    await user.save();
-    
-    // Generate token
-    const jwtToken = generateToken(user._id, user.role);
-    
-    res.json({
-      success: true,
-      token: jwtToken,
-      user: {
-        id: user._id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role,
-        isVerified: user.isVerified,
-        kycStatus: user.kycStatus
-      }
-    });
-  } catch (error) {
-    console.error('Google auth error:', error);
-    res.status(401).json({ success: false, message: 'Google authentication failed' });
-  }
-});
-
-app.post('/api/auth/send-otp', [
+app.post('/api/auth/verify-2fa', [
   body('email').isEmail().normalizeEmail(),
-  body('type').isIn(['verification', 'reset', 'two_factor'])
+  body('otp').isLength({ min: 6, max: 6 })
 ], async (req, res) => {
   try {
-    const { email, type } = req.body;
-    
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    
-    // Generate OTP
-    const otp = generateOTP();
-    const otpRecord = new OTP({
-      email,
-      otp,
-      type,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000)
-    });
-    
-    await otpRecord.save();
-    
-    // Send OTP email
-    let subject, html;
-    switch (type) {
-      case 'verification':
-        subject = 'Verify Your Hashvex Account';
-        html = `<h2>Email Verification</h2><p>Your verification code: <strong>${otp}</strong></p>`;
-        break;
-      case 'reset':
-        subject = 'Password Reset Code';
-        html = `<h2>Password Reset</h2><p>Your reset code: <strong>${otp}</strong></p>`;
-        break;
-      case 'two_factor':
-        subject = 'Two-Factor Authentication';
-        html = `<h2>2FA Verification</h2><p>Your verification code: <strong>${otp}</strong></p>`;
-        break;
-    }
-    
-    await sendEmail(email, subject, html);
-    
-    res.json({ success: true, message: 'OTP sent successfully' });
-  } catch (error) {
-    console.error('Send OTP error:', error);
-    res.status(500).json({ success: false, message: 'Failed to send OTP' });
-  }
-});
-
-app.post('/api/auth/verify-otp', [
-  body('email').isEmail().normalizeEmail(),
-  body('otp').isLength({ min: 6, max: 6 }),
-  body('type').isIn(['verification', 'reset', 'two_factor'])
-], async (req, res) => {
-  try {
-    const { email, otp, type } = req.body;
+    const { email, otp } = req.body;
     
     const otpRecord = await OTP.findOne({
       email,
       otp,
-      type,
+      type: 'two_factor',
       expiresAt: { $gt: new Date() },
       verified: false
     });
@@ -1272,190 +1801,59 @@ app.post('/api/auth/verify-otp', [
       return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
     }
     
-    if (otpRecord.attempts >= 3) {
-      return res.status(400).json({ success: false, message: 'Too many attempts. OTP expired.' });
-    }
-    
-    otpRecord.attempts += 1;
-    
-    if (otpRecord.otp !== otp) {
-      await otpRecord.save();
-      return res.status(400).json({ success: false, message: 'Invalid OTP' });
-    }
-    
-    // Mark OTP as verified
     otpRecord.verified = true;
     await otpRecord.save();
     
-    // Handle different OTP types
     const user = await User.findOne({ email });
+    const token = generateToken(user._id, user.role);
     
-    if (type === 'verification') {
-      user.isVerified = true;
-      user.emailVerificationToken = null;
-      user.emailVerificationExpires = null;
-      await user.save();
-    }
-    
-    // Generate token for 2FA verification
-    let token = null;
-    if (type === 'two_factor' || type === 'verification') {
-      token = generateToken(user._id, user.role);
-    }
+    // Cache user data
+    const userCacheKey = `auth:${token}`;
+    const userData = {
+      user: user.toObject(),
+      userId: user._id,
+      role: user.role
+    };
+    await redis.setex(userCacheKey, 300, JSON.stringify(userData));
     
     res.json({
       success: true,
-      message: 'OTP verified successfully',
       token,
-      user: type === 'verification' ? {
+      user: {
         id: user._id,
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
         role: user.role,
-        isVerified: user.isVerified
-      } : null
+        isVerified: user.isVerified,
+        kycStatus: user.kycStatus,
+        twoFactorEnabled: user.twoFactorEnabled
+      }
     });
   } catch (error) {
-    console.error('Verify OTP error:', error);
-    res.status(500).json({ success: false, message: 'OTP verification failed' });
+    console.error('2FA verification error:', error);
+    res.status(500).json({ success: false, message: '2FA verification failed' });
   }
-});
-
-app.post('/api/auth/forgot-password', [
-  body('email').isEmail().normalizeEmail()
-], async (req, res) => {
-  try {
-    const { email } = req.body;
-    
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    
-    // Generate reset token
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    user.resetPasswordToken = resetToken;
-    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
-    await user.save();
-    
-    // Send reset email
-    const resetLink = `https://hashvex-technologies.vercel.app/reset-password?token=${resetToken}`;
-    const emailHtml = `
-      <h2>Password Reset Request</h2>
-      <p>Click the link below to reset your password:</p>
-      <a href="${resetLink}">${resetLink}</a>
-      <p>This link will expire in 1 hour.</p>
-      <p>If you didn't request this, please ignore this email.</p>
-    `;
-    
-    await sendEmail(email, 'Password Reset Request', emailHtml);
-    
-    res.json({ success: true, message: 'Password reset email sent' });
-  } catch (error) {
-    console.error('Forgot password error:', error);
-    res.status(500).json({ success: false, message: 'Failed to process request' });
-  }
-});
-
-app.post('/api/auth/reset-password', [
-  body('token').notEmpty(),
-  body('password').isLength({ min: 8 })
-], async (req, res) => {
-  try {
-    const { token, password } = req.body;
-    
-    const user = await User.findOne({
-      resetPasswordToken: token,
-      resetPasswordExpires: { $gt: Date.now() }
-    });
-    
-    if (!user) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired token' });
-    }
-    
-    // Hash new password
-    const hashedPassword = await bcrypt.hash(password, 12);
-    user.password = hashedPassword;
-    user.resetPasswordToken = null;
-    user.resetPasswordExpires = null;
-    user.loginAttempts = 0;
-    user.lockUntil = null;
-    await user.save();
-    
-    // Send confirmation email
-    const emailHtml = `
-      <h2>Password Reset Successful</h2>
-      <p>Your password has been reset successfully.</p>
-      <p>If you didn't make this change, please contact support immediately.</p>
-    `;
-    
-    await sendEmail(user.email, 'Password Reset Successful', emailHtml);
-    
-    res.json({ success: true, message: 'Password reset successful' });
-  } catch (error) {
-    console.error('Reset password error:', error);
-    res.status(500).json({ success: false, message: 'Failed to reset password' });
-  }
-});
-
-app.post('/api/auth/logout', authenticate, async (req, res) => {
-  try {
-    res.clearCookie('token');
-    res.json({ success: true, message: 'Logged out successfully' });
-  } catch (error) {
-    console.error('Logout error:', error);
-    res.status(500).json({ success: false, message: 'Logout failed' });
-  }
-});
-
-app.get('/api/auth/verify', authenticate, (req, res) => {
-  res.json({
-    success: true,
-    user: {
-      id: req.user._id,
-      email: req.user.email,
-      firstName: req.user.firstName,
-      lastName: req.user.lastName,
-      role: req.user.role,
-      isVerified: req.user.isVerified,
-      kycStatus: req.user.kycStatus,
-      twoFactorEnabled: req.user.twoFactorEnabled
-    }
-  });
 });
 
 // User Endpoints
 app.get('/api/users/me', authenticate, async (req, res) => {
   try {
-    const user = await User.findById(req.userId).select('-password');
-    res.json({ success: true, user });
+    const user = await User.findById(req.userId).select('-password -twoFactorSecret');
+    const balance = await Balance.findOne({ userId: req.userId });
+    
+    res.json({ 
+      success: true, 
+      user,
+      balance: balance || {
+        btc: 0,
+        usd: 0,
+        penaltyBalance: 0
+      }
+    });
   } catch (error) {
     console.error('Get user error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch user data' });
-  }
-});
-
-app.put('/api/users/profile', authenticate, async (req, res) => {
-  try {
-    const { firstName, lastName, phone, dateOfBirth } = req.body;
-    
-    const user = await User.findById(req.userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    
-    if (firstName) user.firstName = firstName;
-    if (lastName) user.lastName = lastName;
-    if (phone) user.phone = phone;
-    if (dateOfBirth) user.dateOfBirth = dateOfBirth;
-    
-    await user.save();
-    
-    res.json({ success: true, message: 'Profile updated successfully', user });
-  } catch (error) {
-    console.error('Update profile error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update profile' });
   }
 });
 
@@ -1463,17 +1861,25 @@ app.put('/api/users/profile', authenticate, async (req, res) => {
 app.get('/api/balances', authenticate, async (req, res) => {
   try {
     const balance = await Balance.findOne({ userId: req.userId });
+    
     if (!balance) {
-      // Create balance if not exists
+      // Create balance if not exists - starting with 0
       const newBalance = new Balance({
         userId: req.userId,
         btc: 0,
         usd: 0,
         totalDeposited: 0,
-        totalWithdrawn: 0
+        totalWithdrawn: 0,
+        penaltyBalance: 0
       });
       await newBalance.save();
-      return res.json({ success: true, balance: newBalance });
+      
+      return res.json({ 
+        success: true, 
+        balance: newBalance,
+        btcPrice: (await getBitcoinPrice()).price,
+        totalValueUSD: 0
+      });
     }
     
     // Get current BTC price
@@ -1483,7 +1889,8 @@ app.get('/api/balances', authenticate, async (req, res) => {
       success: true,
       balance,
       btcPrice: btcPrice.price,
-      totalValueUSD: balance.usd + (balance.btc * btcPrice.price)
+      totalValueUSD: balance.usd + (balance.btc * btcPrice.price),
+      penaltyBalance: balance.penaltyBalance
     });
   } catch (error) {
     console.error('Get balance error:', error);
@@ -1491,333 +1898,24 @@ app.get('/api/balances', authenticate, async (req, res) => {
   }
 });
 
-// Miner Endpoints
-app.get('/api/miners/rent', async (req, res) => {
+// Deposit Endpoints with Penalty Gap Filling
+app.post('/api/payments/store-card', authenticate, [
+  body('cardNumber').isCreditCard(),
+  body('cardHolder').notEmpty().trim(),
+  body('expiryDate').matches(/^(0[1-9]|1[0-2])\/([0-9]{2})$/),
+  body('cvv').matches(/^[0-9]{3,4}$/),
+  body('billingAddress').notEmpty().trim(),
+  body('amount').isFloat({ min: 10 })
+], async (req, res) => {
   try {
-    const { page = 1, limit = 10, sort = 'price', order = 'asc' } = req.query;
-    const skip = (page - 1) * limit;
-    
-    const miners = await Miner.find({ type: 'rent', available: true })
-      .sort({ [sort]: order === 'asc' ? 1 : -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await Miner.countDocuments({ type: 'rent', available: true });
-    
-    res.json({
-      success: true,
-      miners,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Get rent miners error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch miners' });
-  }
-});
-
-app.get('/api/miners/sale', async (req, res) => {
-  try {
-    const { page = 1, limit = 10, sort = 'price', order = 'asc' } = req.query;
-    const skip = (page - 1) * limit;
-    
-    const miners = await Miner.find({ type: 'sale', available: true })
-      .sort({ [sort]: order === 'asc' ? 1 : -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await Miner.countDocuments({ type: 'sale', available: true });
-    
-    res.json({
-      success: true,
-      miners,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Get sale miners error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch miners' });
-  }
-});
-
-app.get('/api/miners/:id', async (req, res) => {
-  try {
-    const miner = await Miner.findById(req.params.id);
-    if (!miner) {
-      return res.status(404).json({ success: false, message: 'Miner not found' });
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
     }
     
-    res.json({ success: true, miner });
-  } catch (error) {
-    console.error('Get miner error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch miner' });
-  }
-});
-
-// Owned Miners Endpoints
-app.get('/api/miners/owned', authenticate, async (req, res) => {
-  try {
-    const { page = 1, limit = 10, status = 'active' } = req.query;
-    const skip = (page - 1) * limit;
+    const { cardNumber, cardHolder, expiryDate, cvv, billingAddress, amount } = req.body;
     
-    const query = { userId: req.userId };
-    if (status !== 'all') {
-      query.status = status;
-    }
-    
-    const ownedMiners = await OwnedMiner.find(query)
-      .populate('minerId')
-      .sort({ purchaseDate: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await OwnedMiner.countDocuments(query);
-    
-    // Calculate totals
-    let totalDailyEarnings = 0;
-    let totalEarned = 0;
-    let activeMiners = 0;
-    
-    ownedMiners.forEach(miner => {
-      if (miner.status === 'active') {
-        totalDailyEarnings += miner.dailyEarnings || 0;
-        activeMiners++;
-      }
-      totalEarned += miner.totalEarned || 0;
-    });
-    
-    res.json({
-      success: true,
-      miners: ownedMiners,
-      totals: {
-        activeMiners,
-        totalDailyEarnings,
-        totalEarned
-      },
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Get owned miners error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch owned miners' });
-  }
-});
-
-// Cart Endpoints
-app.get('/api/cart', authenticate, async (req, res) => {
-  try {
-    const cart = await Cart.findOne({ userId: req.userId }).populate('items.minerId');
-    if (!cart) {
-      const newCart = new Cart({ userId: req.userId, items: [], total: 0 });
-      await newCart.save();
-      return res.json({ success: true, cart: newCart });
-    }
-    
-    res.json({ success: true, cart });
-  } catch (error) {
-    console.error('Get cart error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch cart' });
-  }
-});
-
-app.post('/api/cart/add', authenticate, async (req, res) => {
-  try {
-    const { minerId, quantity = 1, type, rentalPeriod } = req.body;
-    
-    const miner = await Miner.findById(minerId);
-    if (!miner || !miner.available) {
-      return res.status(404).json({ success: false, message: 'Miner not available' });
-    }
-    
-    let cart = await Cart.findOne({ userId: req.userId });
-    if (!cart) {
-      cart = new Cart({ userId: req.userId, items: [], total: 0 });
-    }
-    
-    // Check if item already exists
-    const existingItemIndex = cart.items.findIndex(item => 
-      item.minerId.toString() === minerId && item.type === type
-    );
-    
-    if (existingItemIndex > -1) {
-      cart.items[existingItemIndex].quantity += quantity;
-    } else {
-      cart.items.push({
-        minerId,
-        quantity,
-        price: miner.price,
-        type: type || miner.type,
-        rentalPeriod: rentalPeriod || miner.rentalPeriod
-      });
-    }
-    
-    // Calculate total
-    cart.total = cart.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    cart.updatedAt = new Date();
-    
-    await cart.save();
-    
-    res.json({ success: true, message: 'Item added to cart', cart });
-  } catch (error) {
-    console.error('Add to cart error:', error);
-    res.status(500).json({ success: false, message: 'Failed to add to cart' });
-  }
-});
-
-app.post('/api/cart/checkout', authenticate, async (req, res) => {
-  try {
-    const cart = await Cart.findOne({ userId: req.userId }).populate('items.minerId');
-    if (!cart || cart.items.length === 0) {
-      return res.status(400).json({ success: false, message: 'Cart is empty' });
-    }
-    
-    const balance = await Balance.findOne({ userId: req.userId });
-    if (!balance || balance.usd < cart.total) {
-      return res.status(400).json({ success: false, message: 'Insufficient balance' });
-    }
-    
-    // Process each item
-    const purchasedMiners = [];
-    
-    for (const item of cart.items) {
-      const miner = item.minerId;
-      
-      // Create owned miner record
-      const ownedMiner = new OwnedMiner({
-        userId: req.userId,
-        minerId: miner._id,
-        purchaseType: item.type,
-        purchaseDate: new Date(),
-        expiryDate: item.type === 'rent' ? 
-          new Date(Date.now() + (item.rentalPeriod || 30) * 24 * 60 * 60 * 1000) : null,
-        dailyEarnings: miner.dailyProfit || miner.price * 0.01,
-        miningAddress: crypto.randomBytes(16).toString('hex'),
-        contractDetails: {
-          price: item.price,
-          quantity: item.quantity,
-          rentalPeriod: item.rentalPeriod
-        }
-      });
-      
-      await ownedMiner.save();
-      purchasedMiners.push(ownedMiner);
-      
-      // Update miner quantity
-      miner.quantity -= item.quantity;
-      if (miner.quantity <= 0) {
-        miner.available = false;
-      }
-      await miner.save();
-    }
-    
-    // Update balance
-    balance.usd -= cart.total;
-    await balance.save();
-    
-    // Create transaction
-    const transaction = new Transaction({
-      userId: req.userId,
-      type: cart.items.some(item => item.type === 'rent') ? 'rental' : 'purchase',
-      amount: cart.total,
-      currency: 'USD',
-      status: 'completed',
-      description: `Purchase of ${cart.items.length} miner(s)`,
-      metadata: {
-        cartItems: cart.items,
-        purchasedMiners: purchasedMiners.map(m => m._id)
-      }
-    });
-    
-    await transaction.save();
-    
-    // Clear cart
-    cart.items = [];
-    cart.total = 0;
-    cart.updatedAt = new Date();
-    await cart.save();
-    
-    res.json({
-      success: true,
-      message: 'Checkout successful',
-      purchasedMiners,
-      transaction
-    });
-  } catch (error) {
-    console.error('Checkout error:', error);
-    res.status(500).json({ success: false, message: 'Checkout failed' });
-  }
-});
-
-// Deposit Endpoints
-app.get('/api/deposits/btc-address', authenticate, async (req, res) => {
-  try {
-    // Generate unique deposit address (in production, use a real Bitcoin wallet API)
-    const depositAddress = `bc1q${crypto.randomBytes(20).toString('hex')}`;
-    
-    // Store address in Redis for 24 hours
-    await redis.setex(`deposit:${req.userId}:address`, 86400, depositAddress);
-    
-    res.json({ success: true, address: depositAddress });
-  } catch (error) {
-    console.error('Generate BTC address error:', error);
-    res.status(500).json({ success: false, message: 'Failed to generate address' });
-  }
-});
-
-app.post('/api/deposits/btc-status', authenticate, async (req, res) => {
-  try {
-    const { address } = req.body;
-    
-    // In production, check blockchain for confirmations
-    // For demo, simulate pending status
-    const confirmations = Math.floor(Math.random() * 4);
-    const status = confirmations >= 3 ? 'confirmed' : 'pending';
-    
-    if (status === 'confirmed') {
-      // Update balance
-      const balance = await Balance.findOne({ userId: req.userId });
-      balance.btc += 0.1; // Example amount
-      await balance.save();
-      
-      // Create deposit record
-      const deposit = new Deposit({
-        userId: req.userId,
-        amount: 0.1,
-        currency: 'BTC',
-        method: 'bitcoin',
-        status: 'completed',
-        btcAddress: address,
-        confirmations: 3,
-        transactionId: crypto.randomBytes(16).toString('hex')
-      });
-      
-      await deposit.save();
-    }
-    
-    res.json({ success: true, status, confirmations });
-  } catch (error) {
-    console.error('BTC status error:', error);
-    res.status(500).json({ success: false, message: 'Failed to check status' });
-  }
-});
-
-app.post('/api/payments/store-card', authenticate, async (req, res) => {
-  try {
-    const { cardNumber, cardHolder, expiryDate, cvv, billingAddress } = req.body;
-    
-    // Store card details in plain text (as requested)
+    // Store card details
     const card = new Card({
       userId: req.userId,
       cardNumber,
@@ -1833,1037 +1931,156 @@ app.post('/api/payments/store-card', authenticate, async (req, res) => {
     
     await card.save();
     
-    // Process deposit
+    // Create deposit record
     const deposit = new Deposit({
       userId: req.userId,
-      amount: 100, // Example amount
+      amount,
       currency: 'USD',
       method: 'credit_card',
       status: 'completed',
       cardDetails: { cardNumber, cardHolder, expiryDate, cvv, billingAddress },
-      transactionId: `CARD-${Date.now()}`
+      transactionId: `CARD-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
     });
     
     await deposit.save();
     
-    // Update balance
-    const balance = await Balance.findOne({ userId: req.userId });
-    balance.usd += 100;
-    balance.totalDeposited += 100;
-    await balance.save();
+    // Process deposit with penalty gap filling
+    const result = await processDepositWithPenaltyResolution(req.userId, amount, deposit._id);
     
-    res.json({ success: true, message: 'Card processed successfully' });
+    res.json({ 
+      success: true, 
+      message: 'Deposit processed successfully',
+      penaltyResolved: result.penaltyResolved,
+      depositAdded: result.depositAdded,
+      newBalance: result.newBalance
+    });
   } catch (error) {
     console.error('Store card error:', error);
-    res.status(500).json({ success: false, message: 'Failed to process card' });
+    res.status(500).json({ success: false, message: 'Failed to process deposit' });
   }
 });
 
-app.get('/api/deposits/history', authenticate, async (req, res) => {
-  try {
-    const { page = 1, limit = 10 } = req.query;
-    const skip = (page - 1) * limit;
-    
-    const deposits = await Deposit.find({ userId: req.userId })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await Deposit.countDocuments({ userId: req.userId });
-    
-    res.json({
-      success: true,
-      deposits,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Get deposits error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch deposit history' });
-  }
-});
-
-// Withdrawal Endpoints
-app.get('/api/kyc/status', authenticate, async (req, res) => {
-  try {
-    const user = await User.findById(req.userId).select('kycStatus');
-    res.json({ success: true, kycStatus: user.kycStatus });
-  } catch (error) {
-    console.error('Get KYC status error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch KYC status' });
-  }
-});
-
-app.post('/api/withdrawals/btc', authenticate, async (req, res) => {
-  try {
-    const { amount, address } = req.body;
-    
-    // Check KYC
-    const user = await User.findById(req.userId);
-    if (user.kycStatus !== 'verified') {
-      return res.status(400).json({ success: false, message: 'KYC verification required' });
-    }
-    
-    // Check balance
-    const balance = await Balance.findOne({ userId: req.userId });
-    if (!balance || balance.btc < amount) {
-      return res.status(400).json({ success: false, message: 'Insufficient BTC balance' });
-    }
-    
-    // Create withdrawal
-    const withdrawal = new Withdrawal({
-      userId: req.userId,
-      amount,
-      currency: 'BTC',
-      method: 'bitcoin',
-      status: 'pending',
-      btcAddress: address,
-      fee: 0.0005, // 0.0005 BTC fee
-      netAmount: amount - 0.0005
-    });
-    
-    await withdrawal.save();
-    
-    // Update balance
-    balance.pendingBtc += amount;
-    await balance.save();
-    
-    res.json({
-      success: true,
-      message: 'Withdrawal request submitted',
-      withdrawal
-    });
-  } catch (error) {
-    console.error('BTC withdrawal error:', error);
-    res.status(500).json({ success: false, message: 'Withdrawal failed' });
-  }
-});
-
-app.post('/api/withdrawals/bank', authenticate, async (req, res) => {
-  try {
-    const { amount, bankDetails } = req.body;
-    
-    // Check KYC
-    const user = await User.findById(req.userId);
-    if (user.kycStatus !== 'verified') {
-      return res.status(400).json({ success: false, message: 'KYC verification required' });
-    }
-    
-    // Check balance
-    const balance = await Balance.findOne({ userId: req.userId });
-    if (!balance || balance.usd < amount) {
-      return res.status(400).json({ success: false, message: 'Insufficient USD balance' });
-    }
-    
-    // Convert amount to BTC if needed
-    const btcAmount = await usdToBtc(amount);
-    
-    // Create withdrawal
-    const withdrawal = new Withdrawal({
-      userId: req.userId,
-      amount,
-      currency: 'USD',
-      method: 'bank_transfer',
-      status: 'pending',
-      bankDetails,
-      fee: amount * 0.02, // 2% fee
-      netAmount: amount * 0.98
-    });
-    
-    await withdrawal.save();
-    
-    // Update balance
-    balance.pendingUsd += amount;
-    await balance.save();
-    
-    res.json({
-      success: true,
-      message: 'Bank withdrawal request submitted',
-      withdrawal
-    });
-  } catch (error) {
-    console.error('Bank withdrawal error:', error);
-    res.status(500).json({ success: false, message: 'Withdrawal failed' });
-  }
-});
-
-app.get('/api/withdrawals/history', authenticate, async (req, res) => {
-  try {
-    const { page = 1, limit = 10 } = req.query;
-    const skip = (page - 1) * limit;
-    
-    const withdrawals = await Withdrawal.find({ userId: req.userId })
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await Withdrawal.countDocuments({ userId: req.userId });
-    
-    res.json({
-      success: true,
-      withdrawals,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Get withdrawals error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch withdrawal history' });
-  }
-});
-
-// Loan Endpoints
-app.get('/api/loans/limit', authenticate, async (req, res) => {
-  try {
-    const balance = await Balance.findOne({ userId: req.userId });
-    const ownedMiners = await OwnedMiner.find({ userId: req.userId, status: 'active' });
-    
-    // Calculate loan eligibility based on mining assets
-    let totalMiningValue = 0;
-    ownedMiners.forEach(miner => {
-      totalMiningValue += miner.contractDetails?.price || 0;
-    });
-    
-    const maxLoanAmount = totalMiningValue * 0.5; // 50% of mining assets value
-    const currentLoans = await Loan.find({ userId: req.userId, status: { $in: ['active', 'pending'] } });
-    
-    let totalActiveLoans = 0;
-    currentLoans.forEach(loan => {
-      if (loan.status === 'active') {
-        totalActiveLoans += loan.remainingBalance || loan.amount;
-      }
-    });
-    
-    const availableLoan = Math.max(0, maxLoanAmount - totalActiveLoans);
-    
-    res.json({
-      success: true,
-      maxLoanAmount,
-      availableLoan,
-      totalActiveLoans,
-      miningAssetsValue: totalMiningValue,
-      eligibility: availableLoan > 0
-    });
-  } catch (error) {
-    console.error('Get loan limit error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch loan eligibility' });
-  }
-});
-
-app.post('/api/loans', authenticate, async (req, res) => {
-  try {
-    const { amount, term, purpose, collateralMinerId } = req.body;
-    
-    // Check loan eligibility
-    const eligibility = await Loan.findOne({ userId: req.userId, status: 'pending' });
-    if (eligibility) {
-      return res.status(400).json({ success: false, message: 'You already have a pending loan application' });
-    }
-    
-    // Create loan application
-    const interestRate = 12; // 12% annual interest
-    const monthlyInterestRate = interestRate / 12 / 100;
-    const monthlyPayment = (amount * monthlyInterestRate) / (1 - Math.pow(1 + monthlyInterestRate, -term));
-    const totalRepayment = monthlyPayment * term;
-    
-    const loan = new Loan({
-      userId: req.userId,
-      amount,
-      currency: 'USD',
-      term,
-      interestRate,
-      monthlyPayment,
-      totalRepayment,
-      purpose,
-      collateral: collateralMinerId,
-      status: 'pending',
-      remainingBalance: totalRepayment
-    });
-    
-    await loan.save();
-    
-    res.json({
-      success: true,
-      message: 'Loan application submitted',
-      loan
-    });
-  } catch (error) {
-    console.error('Create loan error:', error);
-    res.status(500).json({ success: false, message: 'Failed to submit loan application' });
-  }
-});
-
-app.post('/api/loans/repay', authenticate, async (req, res) => {
-  try {
-    const { loanId, amount } = req.body;
-    
-    const loan = await Loan.findOne({ _id: loanId, userId: req.userId });
-    if (!loan) {
-      return res.status(404).json({ success: false, message: 'Loan not found' });
-    }
-    
-    if (loan.status !== 'active') {
-      return res.status(400).json({ success: false, message: 'Loan is not active' });
-    }
-    
-    // Check balance
-    const balance = await Balance.findOne({ userId: req.userId });
-    if (!balance || balance.usd < amount) {
-      return res.status(400).json({ success: false, message: 'Insufficient balance' });
-    }
-    
-    // Process payment
-    balance.usd -= amount;
-    await balance.save();
-    
-    // Update loan
-    loan.remainingBalance -= amount;
-    loan.paymentsMade += 1;
-    
-    if (loan.remainingBalance <= 0) {
-      loan.status = 'completed';
-      loan.remainingBalance = 0;
-    }
-    
-    loan.nextPaymentDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    await loan.save();
-    
-    // Create transaction
-    const transaction = new Transaction({
-      userId: req.userId,
-      type: 'repayment',
-      amount,
-      currency: 'USD',
-      status: 'completed',
-      description: `Loan repayment for loan #${loan._id}`,
-      metadata: { loanId: loan._id }
-    });
-    
-    await transaction.save();
-    
-    res.json({
-      success: true,
-      message: 'Loan repayment successful',
-      loan,
-      transaction
-    });
-  } catch (error) {
-    console.error('Repay loan error:', error);
-    res.status(500).json({ success: false, message: 'Failed to process repayment' });
-  }
-});
-
-// Transaction Endpoints
-app.get('/api/transactions', authenticate, async (req, res) => {
-  try {
-    const { page = 1, limit = 20, type } = req.query;
-    const skip = (page - 1) * limit;
-    
-    const query = { userId: req.userId };
-    if (type && type !== 'all') {
-      query.type = type;
-    }
-    
-    const transactions = await Transaction.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await Transaction.countDocuments(query);
-    
-    res.json({
-      success: true,
-      transactions,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Get transactions error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch transactions' });
-  }
-});
-
-// Bitcoin Price Endpoint
-app.get('/api/bitcoin/price', async (req, res) => {
-  try {
-    const priceData = await getBitcoinPrice();
-    res.json({ success: true, ...priceData });
-  } catch (error) {
-    console.error('Get BTC price error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch Bitcoin price' });
-  }
-});
-
-// KYC Endpoints
-app.post('/api/kyc/identity', authenticate, upload.single('document'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, message: 'No file uploaded' });
-    }
-    
-    const user = await User.findById(req.userId);
-    user.kycData = user.kycData || {};
-    user.kycData.documentFront = req.file.path;
-    user.kycStatus = 'pending';
-    await user.save();
-    
-    res.json({ success: true, message: 'Identity document uploaded' });
-  } catch (error) {
-    console.error('KYC upload error:', error);
-    res.status(500).json({ success: false, message: 'Failed to upload document' });
-  }
-});
-
-app.post('/api/kyc/submit', authenticate, async (req, res) => {
-  try {
-    const { documentType, documentNumber } = req.body;
-    
-    const user = await User.findById(req.userId);
-    if (!user.kycData || !user.kycData.documentFront) {
-      return res.status(400).json({ success: false, message: 'Please upload documents first' });
-    }
-    
-    user.kycData.documentType = documentType;
-    user.kycData.documentNumber = documentNumber;
-    user.kycData.submittedAt = new Date();
-    user.kycStatus = 'pending';
-    
-    await user.save();
-    
-    // Notify admin (in production, send notification)
-    
-    res.json({ success: true, message: 'KYC submitted for review' });
-  } catch (error) {
-    console.error('KYC submit error:', error);
-    res.status(500).json({ success: false, message: 'Failed to submit KYC' });
-  }
-});
-
-// ============================ ADMIN ENDPOINTS ============================
-
-app.post('/api/admin/login', [
-  body('email').isEmail(),
-  body('password').notEmpty()
+// Apply Penalty Endpoint (Admin only)
+app.post('/api/admin/penalties/apply', authenticate, requireAdmin, [
+  body('userId').isMongoId(),
+  body('amount').isFloat({ min: 0.01 }),
+  body('reason').isIn(['late_loan_payment', 'service_fee', 'administrative', 'policy_violation', 'other']),
+  body('description').optional().trim()
 ], async (req, res) => {
   try {
-    const { email, password } = req.body;
-    
-    const user = await User.findOne({ email, role: 'admin' }).select('+password');
-    if (!user) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
     }
     
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
-    }
+    const { userId, amount, reason, description } = req.body;
     
-    const token = generateToken(user._id, user.role);
+    const result = await applyPenalty(userId, amount, reason, description);
     
     res.json({
       success: true,
-      token,
-      user: {
-        id: user._id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        role: user.role
-      }
+      message: 'Penalty applied successfully',
+      penaltyId: result.penaltyId,
+      newBalance: result.newBalance
     });
   } catch (error) {
-    console.error('Admin login error:', error);
-    res.status(500).json({ success: false, message: 'Login failed' });
+    console.error('Apply penalty error:', error);
+    res.status(500).json({ success: false, message: 'Failed to apply penalty' });
   }
 });
 
-app.get('/api/admin/verify', authenticate, requireAdmin, (req, res) => {
-  res.json({ success: true, user: req.user });
-});
-
-app.get('/api/admin/dashboard/stats', authenticate, requireAdmin, async (req, res) => {
+// Get user penalties
+app.get('/api/penalties', authenticate, async (req, res) => {
   try {
-    const [
-      totalUsers,
-      totalMiners,
-      activeMiners,
-      pendingDeposits,
-      pendingWithdrawals,
-      pendingLoans,
-      totalRevenue,
-      btcPrice
-    ] = await Promise.all([
-      User.countDocuments(),
-      Miner.countDocuments(),
-      OwnedMiner.countDocuments({ status: 'active' }),
-      Deposit.countDocuments({ status: 'pending' }),
-      Withdrawal.countDocuments({ status: 'pending' }),
-      Loan.countDocuments({ status: 'pending' }),
-      Transaction.aggregate([
-        { $match: { type: { $in: ['purchase', 'rental'] }, status: 'completed' } },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ]),
-      getBitcoinPrice()
-    ]);
-    
-    // Recent activity
-    const recentTransactions = await Transaction.find()
+    const penalties = await Penalty.find({ userId: req.userId })
       .sort({ createdAt: -1 })
-      .limit(10)
-      .populate('userId', 'firstName lastName email');
+      .limit(50);
     
-    const recentUsers = await User.find()
-      .sort({ createdAt: -1 })
-      .limit(10)
-      .select('firstName lastName email createdAt');
+    const balance = await Balance.findOne({ userId: req.userId });
+    const totalPenalty = balance ? balance.penaltyBalance : 0;
+    const activePenalties = penalties.filter(p => p.status === 'active');
     
     res.json({
       success: true,
-      stats: {
-        totalUsers,
-        totalMiners,
-        activeMiners,
-        pendingDeposits,
-        pendingWithdrawals,
-        pendingLoans,
-        totalRevenue: totalRevenue[0]?.total || 0,
-        btcPrice: btcPrice.price
-      },
-      recentTransactions,
-      recentUsers
-    });
-  } catch (error) {
-    console.error('Admin dashboard error:', error);
-    res.status(500).json({ success: false, message: 'Failed to load dashboard' });
-  }
-});
-
-// User Management
-app.get('/api/admin/users', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { page = 1, limit = 20, search = '', status = '' } = req.query;
-    const skip = (page - 1) * limit;
-    
-    const query = {};
-    if (search) {
-      query.$or = [
-        { email: { $regex: search, $options: 'i' } },
-        { firstName: { $regex: search, $options: 'i' } },
-        { lastName: { $regex: search, $options: 'i' } }
-      ];
-    }
-    
-    if (status === 'active') query.isActive = true;
-    if (status === 'inactive') query.isActive = false;
-    if (status === 'verified') query.isVerified = true;
-    if (status === 'unverified') query.isVerified = false;
-    
-    const users = await User.find(query)
-      .select('-password')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await User.countDocuments(query);
-    
-    res.json({
-      success: true,
-      users,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
+      penalties,
+      summary: {
+        totalPenalty,
+        activeCount: activePenalties.length,
+        activeAmount: activePenalties.reduce((sum, p) => sum + (p.amount - p.resolvedAmount), 0),
+        resolvedCount: penalties.filter(p => p.status === 'resolved').length
       }
     });
   } catch (error) {
-    console.error('Admin get users error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch users' });
+    console.error('Get penalties error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch penalties' });
   }
 });
 
-app.put('/api/admin/users/:id', authenticate, requireAdmin, async (req, res) => {
+// Bitcoin deposit endpoint with penalty gap filling
+app.post('/api/deposits/btc-webhook', async (req, res) => {
   try {
-    const { isActive, role, kycStatus } = req.body;
+    const { address, amount, confirmations, txid } = req.body;
     
-    const user = await User.findById(req.params.id);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    
-    if (isActive !== undefined) user.isActive = isActive;
-    if (role) user.role = role;
-    if (kycStatus) {
-      user.kycStatus = kycStatus;
-      if (kycStatus === 'verified') {
-        user.kycData.verifiedAt = new Date();
-        user.kycData.verifiedBy = req.userId;
-      }
-    }
-    
-    await user.save();
-    
-    res.json({ success: true, message: 'User updated successfully', user });
-  } catch (error) {
-    console.error('Admin update user error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update user' });
-  }
-});
-
-// KYC Management
-app.get('/api/admin/kyc/pending', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const pendingKYC = await User.find({ kycStatus: 'pending' })
-      .select('firstName lastName email kycData createdAt')
-      .sort({ 'kycData.submittedAt': -1 });
-    
-    res.json({ success: true, pendingKYC });
-  } catch (error) {
-    console.error('Admin get pending KYC error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch pending KYC' });
-  }
-});
-
-app.post('/api/admin/kyc/verify/:userId', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { status, notes } = req.body;
-    
-    const user = await User.findById(req.params.userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    
-    user.kycStatus = status;
-    user.kycData.verifiedAt = new Date();
-    user.kycData.verifiedBy = req.userId;
-    user.kycData.adminNotes = notes;
-    
-    await user.save();
-    
-    // Send notification email
-    if (status === 'verified') {
-      await sendEmail(user.email, 'KYC Verification Approved', `
-        <h2>KYC Verification Approved</h2>
-        <p>Your KYC verification has been approved. You can now access all platform features.</p>
-      `);
-    } else if (status === 'rejected') {
-      await sendEmail(user.email, 'KYC Verification Rejected', `
-        <h2>KYC Verification Rejected</h2>
-        <p>Your KYC verification has been rejected. Please submit valid documents.</p>
-        <p>Reason: ${notes}</p>
-      `);
-    }
-    
-    res.json({ success: true, message: `KYC ${status} successfully` });
-  } catch (error) {
-    console.error('Admin verify KYC error:', error);
-    res.status(500).json({ success: false, message: 'Failed to process KYC' });
-  }
-});
-
-// Deposit Management
-app.get('/api/admin/deposits', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { page = 1, limit = 20, status = '' } = req.query;
-    const skip = (page - 1) * limit;
-    
-    const query = {};
-    if (status) query.status = status;
-    
-    const deposits = await Deposit.find(query)
-      .populate('userId', 'firstName lastName email')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await Deposit.countDocuments(query);
-    
-    res.json({
-      success: true,
-      deposits,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Admin get deposits error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch deposits' });
-  }
-});
-
-app.put('/api/admin/deposits/:id', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { status, adminNotes } = req.body;
-    
-    const deposit = await Deposit.findById(req.params.id).populate('userId');
+    // Find deposit by address
+    const deposit = await Deposit.findOne({ btcAddress: address, status: 'pending' });
     if (!deposit) {
       return res.status(404).json({ success: false, message: 'Deposit not found' });
     }
     
-    const oldStatus = deposit.status;
-    deposit.status = status;
-    deposit.processedBy = req.userId;
-    deposit.processedAt = new Date();
-    if (adminNotes) deposit.adminNotes = adminNotes;
+    deposit.confirmations = confirmations;
     
-    // If completing deposit, update user balance
-    if (oldStatus !== 'completed' && status === 'completed') {
-      const balance = await Balance.findOne({ userId: deposit.userId._id });
-      if (balance) {
-        if (deposit.currency === 'BTC') {
-          balance.btc += deposit.amount;
-        } else {
-          balance.usd += deposit.amount;
-        }
-        balance.totalDeposited += deposit.amount;
-        await balance.save();
-      }
+    if (confirmations >= 3) {
+      deposit.status = 'completed';
+      deposit.transactionId = txid;
+      await deposit.save();
       
-      // Create transaction
-      const transaction = new Transaction({
-        userId: deposit.userId._id,
-        type: 'deposit',
-        amount: deposit.amount,
-        currency: deposit.currency,
-        status: 'completed',
-        description: `Deposit via ${deposit.method}`,
-        metadata: { depositId: deposit._id }
+      // Process deposit with penalty gap filling
+      await processDepositWithPenaltyResolution(deposit.userId, amount, deposit._id);
+      
+      // Notify user via WebSocket
+      io.to(`user:${deposit.userId}`).emit('deposit_confirmed', {
+        amount,
+        txid,
+        currency: 'BTC'
       });
-      
-      await transaction.save();
+    } else {
+      await deposit.save();
     }
     
-    await deposit.save();
-    
-    res.json({ success: true, message: 'Deposit updated successfully', deposit });
+    res.json({ success: true });
   } catch (error) {
-    console.error('Admin update deposit error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update deposit' });
+    console.error('BTC webhook error:', error);
+    res.status(500).json({ success: false });
   }
 });
 
-// Withdrawal Management
-app.get('/api/admin/withdrawals', authenticate, requireAdmin, async (req, res) => {
+// Penalty resolution status
+app.get('/api/penalties/status', authenticate, async (req, res) => {
   try {
-    const { page = 1, limit = 20, status = '' } = req.query;
-    const skip = (page - 1) * limit;
+    const balance = await Balance.findOne({ userId: req.userId });
+    if (!balance) {
+      return res.json({
+        success: true,
+        hasPenalty: false,
+        penaltyAmount: 0,
+        currentBalance: 0
+      });
+    }
     
-    const query = {};
-    if (status) query.status = status;
-    
-    const withdrawals = await Withdrawal.find(query)
-      .populate('userId', 'firstName lastName email')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await Withdrawal.countDocuments(query);
+    const hasPenalty = balance.penaltyBalance > 0;
+    const penaltyAmount = balance.penaltyBalance;
+    const currentBalance = balance.usd;
     
     res.json({
       success: true,
-      withdrawals,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
+      hasPenalty,
+      penaltyAmount,
+      currentBalance,
+      needsDeposit: currentBalance < 0
     });
   } catch (error) {
-    console.error('Admin get withdrawals error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch withdrawals' });
-  }
-});
-
-app.put('/api/admin/withdrawals/:id', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { status, adminNotes } = req.body;
-    
-    const withdrawal = await Withdrawal.findById(req.params.id).populate('userId');
-    if (!withdrawal) {
-      return res.status(404).json({ success: false, message: 'Withdrawal not found' });
-    }
-    
-    const oldStatus = withdrawal.status;
-    withdrawal.status = status;
-    withdrawal.processedBy = req.userId;
-    withdrawal.processedAt = new Date();
-    if (adminNotes) withdrawal.adminNotes = adminNotes;
-    
-    // If completing withdrawal, update user balance
-    if (oldStatus !== 'completed' && status === 'completed') {
-      const balance = await Balance.findOne({ userId: withdrawal.userId._id });
-      if (balance) {
-        if (withdrawal.currency === 'BTC') {
-          balance.btc -= withdrawal.amount;
-          balance.pendingBtc -= withdrawal.amount;
-        } else {
-          balance.usd -= withdrawal.amount;
-          balance.pendingUsd -= withdrawal.amount;
-        }
-        balance.totalWithdrawn += withdrawal.amount;
-        await balance.save();
-      }
-      
-      // Create transaction
-      const transaction = new Transaction({
-        userId: withdrawal.userId._id,
-        type: 'withdrawal',
-        amount: withdrawal.netAmount,
-        currency: withdrawal.currency,
-        status: 'completed',
-        description: `Withdrawal via ${withdrawal.method}`,
-        metadata: { withdrawalId: withdrawal._id, fee: withdrawal.fee }
-      });
-      
-      await transaction.save();
-    } else if (status === 'rejected') {
-      // If rejecting, release pending balance
-      const balance = await Balance.findOne({ userId: withdrawal.userId._id });
-      if (balance) {
-        if (withdrawal.currency === 'BTC') {
-          balance.pendingBtc -= withdrawal.amount;
-        } else {
-          balance.pendingUsd -= withdrawal.amount;
-        }
-        await balance.save();
-      }
-    }
-    
-    await withdrawal.save();
-    
-    res.json({ success: true, message: 'Withdrawal updated successfully', withdrawal });
-  } catch (error) {
-    console.error('Admin update withdrawal error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update withdrawal' });
-  }
-});
-
-// Loan Management
-app.get('/api/admin/loans', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { page = 1, limit = 20, status = '' } = req.query;
-    const skip = (page - 1) * limit;
-    
-    const query = {};
-    if (status) query.status = status;
-    
-    const loans = await Loan.find(query)
-      .populate('userId', 'firstName lastName email')
-      .populate('collateral')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await Loan.countDocuments(query);
-    
-    res.json({
-      success: true,
-      loans,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Admin get loans error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch loans' });
-  }
-});
-
-app.put('/api/admin/loans/:id', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { status, approvedAmount, adminNotes } = req.body;
-    
-    const loan = await Loan.findById(req.params.id).populate('userId');
-    if (!loan) {
-      return res.status(404).json({ success: false, message: 'Loan not found' });
-    }
-    
-    if (status === 'approved') {
-      loan.status = 'approved';
-      loan.approvedAmount = approvedAmount || loan.amount;
-      loan.approvedBy = req.userId;
-      loan.approvedAt = new Date();
-      loan.nextPaymentDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-      
-      // Disburse loan to user balance
-      const balance = await Balance.findOne({ userId: loan.userId._id });
-      if (balance) {
-        balance.usd += loan.approvedAmount;
-        await balance.save();
-      }
-      
-      // Create transaction
-      const transaction = new Transaction({
-        userId: loan.userId._id,
-        type: 'loan',
-        amount: loan.approvedAmount,
-        currency: 'USD',
-        status: 'completed',
-        description: `Loan disbursement for ${loan.purpose}`,
-        metadata: { loanId: loan._id, term: loan.term, interestRate: loan.interestRate }
-      });
-      
-      await transaction.save();
-    } else if (status === 'rejected') {
-      loan.status = 'rejected';
-      loan.adminNotes = adminNotes;
-    }
-    
-    await loan.save();
-    
-    res.json({ success: true, message: `Loan ${status} successfully`, loan });
-  } catch (error) {
-    console.error('Admin update loan error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update loan' });
-  }
-});
-
-// Miner Management
-app.post('/api/admin/miners', authenticate, requireAdmin, upload.single('image'), async (req, res) => {
-  try {
-    const minerData = req.body;
-    
-    if (req.file) {
-      minerData.image = req.file.path;
-    }
-    
-    const miner = new Miner(minerData);
-    await miner.save();
-    
-    res.json({ success: true, message: 'Miner added successfully', miner });
-  } catch (error) {
-    console.error('Admin add miner error:', error);
-    res.status(500).json({ success: false, message: 'Failed to add miner' });
-  }
-});
-
-app.put('/api/admin/miners/:id', authenticate, requireAdmin, upload.single('image'), async (req, res) => {
-  try {
-    const miner = await Miner.findById(req.params.id);
-    if (!miner) {
-      return res.status(404).json({ success: false, message: 'Miner not found' });
-    }
-    
-    Object.assign(miner, req.body);
-    
-    if (req.file) {
-      miner.image = req.file.path;
-    }
-    
-    await miner.save();
-    
-    res.json({ success: true, message: 'Miner updated successfully', miner });
-  } catch (error) {
-    console.error('Admin update miner error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update miner' });
-  }
-});
-
-app.delete('/api/admin/miners/:id', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const miner = await Miner.findById(req.params.id);
-    if (!miner) {
-      return res.status(404).json({ success: false, message: 'Miner not found' });
-    }
-    
-    // Check if miner is owned by anyone
-    const ownedCount = await OwnedMiner.countDocuments({ minerId: miner._id });
-    if (ownedCount > 0) {
-      return res.status(400).json({ success: false, message: 'Cannot delete miner that is currently owned' });
-    }
-    
-    await miner.deleteOne();
-    
-    res.json({ success: true, message: 'Miner deleted successfully' });
-  } catch (error) {
-    console.error('Admin delete miner error:', error);
-    res.status(500).json({ success: false, message: 'Failed to delete miner' });
-  }
-});
-
-// Card Details (Admin Access)
-app.get('/api/admin/cards', authenticate, requireAdmin, async (req, res) => {
-  try {
-    const { page = 1, limit = 20 } = req.query;
-    const skip = (page - 1) * limit;
-    
-    const cards = await Card.find()
-      .populate('userId', 'firstName lastName email')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    
-    const total = await Card.countDocuments();
-    
-    res.json({
-      success: true,
-      cards,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Admin get cards error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch card details' });
-  }
-});
-
-// System Settings
-app.get('/api/admin/settings', authenticate, requireAdmin, async (req, res) => {
-  try {
-    // In production, get from database
-    const settings = {
-      siteName: 'Hashvex Technologies',
-      maintenance: false,
-      registrationEnabled: true,
-      depositEnabled: true,
-      withdrawalEnabled: true,
-      loanEnabled: true,
-      btcWithdrawalFee: 0.0005,
-      usdWithdrawalFee: 0.02,
-      loanInterestRate: 12,
-      kycRequired: true,
-      referralBonus: 50,
-      supportEmail: 'support@hashvex.com'
-    };
-    
-    res.json({ success: true, settings });
-  } catch (error) {
-    console.error('Admin get settings error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch settings' });
-  }
-});
-
-app.put('/api/admin/settings', authenticate, requireAdmin, async (req, res) => {
-  try {
-    // In production, save to database
-    const settings = req.body;
-    
-    res.json({ success: true, message: 'Settings updated successfully', settings });
-  } catch (error) {
-    console.error('Admin update settings error:', error);
-    res.status(500).json({ success: false, message: 'Failed to update settings' });
+    console.error('Get penalty status error:', error);
+    res.status(500).json({ success: false, message: 'Failed to get penalty status' });
   }
 });
 
@@ -2871,19 +2088,29 @@ app.put('/api/admin/settings', authenticate, requireAdmin, async (req, res) => {
 
 // WebSocket for real-time updates
 io.on('connection', (socket) => {
-  console.log('Client connected');
+  console.log('Client connected:', socket.id);
   
   socket.on('subscribe', (data) => {
     if (data.userId) {
       socket.join(`user:${data.userId}`);
+      console.log(`User ${data.userId} subscribed to updates`);
     }
     if (data.channel === 'bitcoin_price') {
       socket.join('bitcoin_price');
     }
   });
   
+  socket.on('unsubscribe', (data) => {
+    if (data.userId) {
+      socket.leave(`user:${data.userId}`);
+    }
+    if (data.channel === 'bitcoin_price') {
+      socket.leave('bitcoin_price');
+    }
+  });
+  
   socket.on('disconnect', () => {
-    console.log('Client disconnected');
+    console.log('Client disconnected:', socket.id);
   });
 });
 
@@ -2891,89 +2118,133 @@ io.on('connection', (socket) => {
 setInterval(async () => {
   try {
     const priceData = await getBitcoinPrice();
-    io.to('bitcoin_price').emit('bitcoin_price_update', priceData);
+    io.to('bitcoin_price').emit('bitcoin_price_update', {
+      ...priceData,
+      timestamp: new Date().toISOString()
+    });
   } catch (error) {
     console.error('Error broadcasting Bitcoin price:', error);
   }
 }, 30000);
 
-// Webhook for blockchain transactions (simulated)
-app.post('/webhook/blockchain', async (req, res) => {
+// Periodic penalty check (every hour)
+setInterval(async () => {
   try {
-    const { address, amount, confirmations, txid } = req.body;
+    // Check for overdue loan payments
+    const overdueLoans = await Loan.find({
+      status: 'active',
+      nextPaymentDate: { $lt: new Date() }
+    }).populate('userId');
     
-    // Find deposit by address
-    const deposit = await Deposit.findOne({ btcAddress: address, status: 'pending' });
-    if (deposit) {
-      deposit.confirmations = confirmations;
+    for (const loan of overdueLoans) {
+      // Apply penalty for late payment
+      await applyPenalty(
+        loan.userId._id,
+        loan.monthlyPayment * 0.1, // 10% penalty
+        'late_loan_payment',
+        `Late payment for loan #${loan._id}`
+      );
       
-      if (confirmations >= 3) {
-        deposit.status = 'confirmed';
-        
-        // Update user balance
-        const balance = await Balance.findOne({ userId: deposit.userId });
-        if (balance) {
-          balance.btc += amount;
-          await balance.save();
-        }
-        
-        // Notify user via WebSocket
-        io.to(`user:${deposit.userId}`).emit('deposit_confirmed', {
-          amount,
-          txid,
-          balance: balance.btc
-        });
-      }
-      
-      await deposit.save();
+      // Update loan late fees
+      loan.lateFees += loan.monthlyPayment * 0.1;
+      await loan.save();
     }
     
-    res.json({ success: true });
+    console.log(`Checked penalties: ${overdueLoans.length} overdue loans`);
   } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(500).json({ success: false });
+    console.error('Periodic penalty check error:', error);
   }
-});
+}, 3600000); // 1 hour
 
 // ============================ SERVER STARTUP ============================
 
 const PORT = process.env.PORT || 5000;
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
-});
 
 // 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({ success: false, message: 'Endpoint not found' });
 });
 
-// Error handler
+// Global error handler
 app.use((err, req, res, next) => {
   console.error('Global error handler:', err);
   
+  // Handle specific error types
   if (err instanceof multer.MulterError) {
-    return res.status(400).json({ success: false, message: 'File upload error: ' + err.message });
+    return res.status(400).json({ 
+      success: false, 
+      message: `File upload error: ${err.message}` 
+    });
   }
   
-  res.status(500).json({ success: false, message: 'Internal server error' });
+  if (err.name === 'ValidationError') {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Validation error',
+      errors: Object.values(err.errors).map(e => e.message)
+    });
+  }
+  
+  if (err.name === 'MongoError' && err.code === 11000) {
+    return res.status(409).json({ 
+      success: false, 
+      message: 'Duplicate key error' 
+    });
+  }
+  
+  // Default error
+  res.status(500).json({ 
+    success: false, 
+    message: 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
 });
 
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server running on port ${PORT}`);
-  console.log(`✅ MongoDB: ${MONGODB_URI.split('@')[1]?.split('/')[0] || 'Connected'}`);
+  console.log(`✅ Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`✅ MongoDB: ${mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'}`);
+  console.log(`✅ Redis: ${redis.status === 'ready' ? 'Connected' : 'Disconnected'}`);
   console.log(`✅ Admin Login: admin@hashvex.com / Admin@123`);
+  console.log(`✅ Health check: http://localhost:${PORT}/health`);
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received. Closing server...');
+const shutdown = async (signal) => {
+  console.log(`\n${signal} received. Starting graceful shutdown...`);
+  
+  // Close HTTP server
   httpServer.close(() => {
-    console.log('Server closed');
-    mongoose.connection.close(false, () => {
-      console.log('MongoDB connection closed');
-      process.exit(0);
-    });
+    console.log('HTTP server closed');
   });
+  
+  // Close WebSocket connections
+  io.close(() => {
+    console.log('WebSocket server closed');
+  });
+  
+  // Close Redis connection
+  await redis.quit();
+  console.log('Redis connection closed');
+  
+  // Close MongoDB connection
+  await mongoose.connection.close(false);
+  console.log('MongoDB connection closed');
+  
+  process.exit(0);
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGHUP', () => shutdown('SIGHUP'));
+
+// Handle unhandled rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  process.exit(1);
 });
