@@ -138,7 +138,7 @@ const logger = winston.createLogger({
 app.use(morgan('combined', { stream: { write: message => logger.info(message.trim()) } }));
 
 // Database connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://mekitariansalinacoria8_db_user:<9xMh3vjKgX0k72To>@cluster0.8no6srn.mongodb.net/?appName=Cluster0', {
+mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://mekitariansalinacoria8_db_user:VB8vFPiZmFnJ8wFm@hashvex.kwnsunt.mongodb.net/?appName=Hashvex', {
   autoIndex: true,
   connectTimeoutMS: 30000,
   socketTimeoutMS: 30000,
