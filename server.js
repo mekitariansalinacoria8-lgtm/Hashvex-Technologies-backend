@@ -167,7 +167,7 @@ const transporter = nodemailer.createTransport({
 const googleClient = new OAuth2Client({
   clientId: process.env.GOOGLE_CLIENT_ID || '634814462335-9o4t8q95c4orcsd9sijjl52374g6vm85.apps.googleusercontent.com',
   clientSecret: process.env.GOOGLE_CLIENT_SECRET || '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',
-  redirectUri: process.env.GOOGLE_REDIRECT_URI || 'https://hashvex-technologies-backend.onrender.com/api/auth/google/callback'
+  redirectUri: process.env.GOOGLE_REDIRECT_URI || 'https://hashvex-technologies.vercel.app/api/auth/google/callback'
 });
 
 // JWT Configuration
