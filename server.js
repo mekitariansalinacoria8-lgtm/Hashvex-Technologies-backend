@@ -2597,6 +2597,78 @@ app.post('/api/auth/records', authenticate, async (req, res) => {
 // 19. Admin Endpoints (From ADMIN page)
 const adminAuth = [authenticate, requireAdmin];
 
+
+
+
+// Admin Login Endpoint - Fixes 401 error
+app.post('/api/admin/login', [
+  body('email').isEmail().normalizeEmail(),
+  body('password').notEmpty()
+], async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    // Find admin user
+    const user = await User.findOne({ 
+      email: email.toLowerCase(),
+      role: 'admin' 
+    }).select('+password');
+    
+    if (!user) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid admin credentials' 
+      });
+    }
+    
+    if (!user.isActive) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Admin account deactivated' 
+      });
+    }
+    
+    // Check password
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid admin credentials' 
+      });
+    }
+    
+    // Update last login
+    user.lastLogin = new Date();
+    await user.save();
+    
+    // Generate admin token
+    const token = jwt.sign(
+      { 
+        userId: user._id, 
+        role: user.role,
+        isAdmin: true
+      },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+    
+    res.json({
+      success: true,
+      token,
+      admin: {
+        id: user._id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error('Admin login error:', error);
+    res.status(500).json({ success: false, message: 'Admin login failed' });
+  }
+});
+
 app.get('/api/admin/verify', ...adminAuth, async (req, res) => {
   try {
     res.json({
